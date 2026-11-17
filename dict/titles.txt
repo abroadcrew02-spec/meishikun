@@ -1,0 +1,209 @@
+# 役職語（1行1語）。長い順の並べ替えは読み込み時に行うので、ここでの順序は任意。
+# 辞書に無くても「〜長」で終わる短い語（班長・グループ長 など）は役職とみなす（DESIGN.md §10.6）。
+# 語の途中に一致しても、その片全体が役職になる（例: 「営業部 部長」「製造部班長」）。
+# ---- 経営・役員 ----
+代表取締役社長
+代表取締役会長
+代表取締役副社長
+代表取締役専務
+代表取締役常務
+代表取締役
+代表社員
+代表理事
+代表者
+取締役会長
+取締役社長
+取締役副社長
+取締役専務
+取締役常務
+専務取締役
+常務取締役
+社外取締役
+取締役
+監査役
+執行役員
+上席執行役員
+常務執行役員
+専務執行役員
+執行役
+会長
+副会長
+社長
+副社長
+専務
+常務
+理事長
+副理事長
+専務理事
+常務理事
+理事
+幹事
+評議員
+顧問
+特別顧問
+技術顧問
+相談役
+名誉会長
+名誉顧問
+# ---- 管理職 ----
+本部長
+副本部長
+事業部長
+副事業部長
+統括部長
+支社長
+支店長
+副支店長
+営業所長
+事業所長
+工場長
+副工場長
+所長
+副所長
+センター長
+拠点長
+店長
+副店長
+局長
+事務局長
+事務長
+部長
+副部長
+副長
+部長代理
+部長補佐
+次長
+室長
+課長
+副課長
+課長代理
+課長補佐
+係長
+班長
+組長
+グループ長
+チーム長
+ユニット長
+ライン長
+主席
+首席
+主幹
+主査
+主事
+主任
+参事
+参与
+責任者
+担当部長
+担当課長
+担当
+# ---- 専門職・資格 ----
+技師長
+技師
+技監
+技術士
+主任技師
+研究員
+主任研究員
+上席研究員
+主席研究員
+フェロー
+教授
+准教授
+講師
+助教
+医師
+院長
+副院長
+薬剤師
+看護師
+弁護士
+税理士
+公認会計士
+社会保険労務士
+司法書士
+行政書士
+中小企業診断士
+一級建築士
+二級建築士
+建築士
+宅地建物取引士
+# ---- カタカナ ----
+マネージャー
+マネジャー
+シニアマネージャー
+ゼネラルマネージャー
+アシスタントマネージャー
+プロジェクトマネージャー
+プロダクトマネージャー
+チーフ
+リーダー
+サブリーダー
+グループリーダー
+チームリーダー
+ディレクター
+プロデューサー
+エンジニア
+コンサルタント
+アドバイザー
+スペシャリスト
+エキスパート
+パートナー
+アソシエイト
+アナリスト
+プランナー
+デザイナー
+オーナー
+スタッフ
+# ---- 英語 ----
+Chairman
+Vice Chairman
+President
+Vice President
+Senior Vice President
+Executive Vice President
+CEO
+COO
+CTO
+CFO
+CIO
+CMO
+CHRO
+Chief Executive Officer
+Chief Operating Officer
+Chief Technology Officer
+Chief Financial Officer
+Executive Officer
+Executive Director
+Managing Director
+Director
+Deputy Director
+Associate Director
+General Manager
+Deputy General Manager
+Senior Manager
+Assistant Manager
+Section Manager
+Project Manager
+Product Manager
+Sales Manager
+Account Manager
+Manager
+Group Leader
+Team Leader
+Leader
+Chief
+Supervisor
+Representative
+Sales Representative
+Founder
+Co-Founder
+Owner
+Partner
+Engineer
+Consultant
+Specialist
+Analyst
+Associate
+Officer
+Staff

@@ -1,0 +1,62 @@
+# 開発作業の記録
+/worklog/
+
+# 開発用の資料（非公開）
+/dev/
+
+# 名刺の PDF と読み取り結果（個人情報を含むためリポジトリに入れない）
+/input/
+/output/
+/done/
+/error/
+
+# 名刺のスキャン・一覧表になりうる種類のファイルは、置き場所を問わず入れない
+*.pdf
+*.xlsx
+*.xlsm
+*.xls
+*.csv
+*.tsv
+*.png
+*.jpg
+*.jpeg
+*.tif
+*.tiff
+*.bmp
+*.gif
+*.webp
+*.heic
+*.zip
+*.7z
+*.rar
+*.lzh
+*.doc
+*.docx
+*.msg
+*.eml
+# 例外: 読み取り用の辞書（市外局番・旧字体の対応表。顧客情報を含まない）
+!/dict/*.csv
+
+# 実行の記録
+/logs/
+*.log
+
+# ツール専用の Python と部品（「初めて使う方はこちら.bat」で作り直せる）
+/runtime/
+
+# Python のキャッシュ
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# 秘密情報
+.env
+.env.*
+
+# OS・エディタ
+Thumbs.db
+desktop.ini
+.DS_Store
+.vscode/
