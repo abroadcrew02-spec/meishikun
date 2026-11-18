@@ -1,8 +1,8 @@
 """CLI エントリポイント。
 
 DESIGN.md §4.1・§17・§19.2 を実装する。`python -m app review`（枠を画面で確認してから
-出力）・`python -m app run`（確認なしで出力）・`python -m app diagnose [--no-split]`・
-`python -m app clear` を提供する。重い依存（app.config・
+出力）・`python -m app run`（確認なしで出力）・`python -m app dict`（辞書を画面で編集）・
+`python -m app diagnose [--no-split]`・`python -m app clear` を提供する。重い依存（app.config・
 app.dictionaries・app.batch・app.diagnose）は実際にコマンドを実行する時
 だけ import する（引数パースだけなら依存が揃っていなくても動く）。
 """
@@ -24,6 +24,8 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("run", parents=[common])
     review = sub.add_parser("review", parents=[common])
     review.add_argument("--no-browser", action="store_true", help="ブラウザを開かず、アドレスだけ表示する")
+    dict_cmd = sub.add_parser("dict", parents=[common])
+    dict_cmd.add_argument("--no-browser", action="store_true", help="ブラウザを開かず、アドレスだけ表示する")
     diag = sub.add_parser("diagnose", parents=[common])
     diag.add_argument("--no-split", action="store_true", help="分割結果を出さない")
     clear = sub.add_parser("clear", parents=[common])
@@ -68,27 +70,60 @@ def _run_clear(base: Path, yes: bool) -> int:
     return 0
 
 
-def _run_locked(ns: argparse.Namespace, settings, dicts) -> int:
-    """run / review を、同じフォルダで同時に 1 つだけ動かす。
+def _load_dictionaries(settings):
+    """辞書を読む。ロックを取った後に呼ぶ。
+
+    前の辞書の保存が置き換えの途中で止まっていたら、保存前の辞書に戻してから読む
+    （半端な辞書のまま実行しない）。
+    """
+    from app.dict_edit import recover_interrupted_save
+    from app.dictionaries import load_dictionaries
+
+    for line in recover_interrupted_save(settings.paths.dict_dir).messages():
+        print(line)
+    return load_dictionaries(settings.paths.dict_dir)
+
+
+def _run_locked(ns: argparse.Namespace, settings) -> int:
+    """run / review / dict を、同じフォルダで同時に 1 つだけ動かす。
 
     確認画面を開いている間に別の実行が同じ PDF を処理すると、一覧表が二重にできたり、
-    入力が先に移動されたりするため。
+    入力が先に移動されたりするため。辞書の画面を開いている間は、辞書が書き換わりうるので、
+    全自動も確認画面も動かさない。
     """
     from app import fileops
+    from app.dictionaries import DictionaryError
 
     lock = None
     try:
         lock = fileops.acquire_run_lock(settings.paths.logs)
         locked_out = lock is None
     except OSError:
-        locked_out = False   # logs フォルダを作れない。この後の処理が「起動できない」として報告する
+        # logs フォルダを作れない。run・review は、この後の処理が「起動できない」として報告する。
+        # 辞書の画面は、ロック無しでは動かさない
+        locked_out = ns.command == "dict"
     if locked_out:
         print(
-            "別の実行（確認画面を開いたままの実行を含む）が動いているか、logs フォルダの meishi.lock を"
-            "開けません。前の黒い画面が残っていないか確かめてから、もう一度実行してください。"
+            "別の実行（確認画面・辞書の画面を開いたままの実行を含む）が動いているか、logs フォルダの"
+            " meishi.lock を開けません。前の黒い画面が残っていないか確かめてから、もう一度実行してください。"
         )
         return 2
     try:
+        if ns.command == "dict":
+            from app.dict_edit import run_dict_editor
+
+            try:
+                return run_dict_editor(settings, open_browser=not ns.no_browser)
+            except Exception as exc:  # noqa: BLE001 - 例外の中身（辞書の語やパスを含みうる）を表示しない
+                print(f"辞書の画面を続けられませんでした（{type(exc).__name__}）。")
+                return 1
+
+        try:
+            dicts = _load_dictionaries(settings)
+        except DictionaryError as exc:
+            print(f"起動に失敗しました: {exc}")
+            return 2
+
         if ns.command == "review":
             from app.review import run_review
 
@@ -110,7 +145,10 @@ def _run_locked(ns: argparse.Namespace, settings, dicts) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """"review [--no-browser]" / "run" / "diagnose [--no-split]" / "clear [--yes]"。任意で "--base PATH"。"""
+    """"review [--no-browser]" / "run" / "dict [--no-browser]" / "diagnose [--no-split]" / "clear [--yes]"。
+
+    任意で "--base PATH"。
+    """
     args = sys.argv[1:] if argv is None else argv
     parser = _build_parser()
     try:
@@ -141,13 +179,19 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         settings = load_settings(base)
-        dicts = load_dictionaries(settings.paths.dict_dir)
-    except (ConfigError, DictionaryError) as exc:
+    except ConfigError as exc:
         print(f"起動に失敗しました: {exc}")
         return 2
 
-    if ns.command in ("run", "review"):
-        return _run_locked(ns, settings, dicts)
+    # 辞書は、ロックを取ってから読む（辞書の画面が保存している最中の辞書を読まないため）
+    if ns.command in ("run", "review", "dict"):
+        return _run_locked(ns, settings)
+
+    try:
+        dicts = load_dictionaries(settings.paths.dict_dir)
+    except DictionaryError as exc:
+        print(f"起動に失敗しました: {exc}")
+        return 2
 
     if ns.command == "diagnose":
         from app.diagnose import run_diagnose

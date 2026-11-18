@@ -24,6 +24,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from app import batch, extract, geometry, labels, pdf_reader, segmenter
+from app.apperror import AppError
 from app.models import FileStatus, PageKind, Reason
 from app.summary import BatchSummary, FileOutcome, format_summary
 
@@ -63,13 +64,8 @@ FINISHED = "finished"
 CANCELLED = "cancelled"
 
 
-class ReviewError(Exception):
-    """画面からの要求を受け付けられない。code は固定の短い語で、抽出値や例外の内容を含めない。"""
-
-    def __init__(self, status: int, code: str) -> None:
-        super().__init__(code)
-        self.status = status
-        self.code = code
+class ReviewError(AppError):
+    """確認画面からの要求を受け付けられない。code は固定の短い語で、抽出値や例外の内容を含めない。"""
 
 
 def _round_rect(rect: "Rect4") -> "Rect4":

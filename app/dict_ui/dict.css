@@ -1,0 +1,188 @@
+/* 読み取りの辞書の画面だけの指定。色・書体・ボタン・帯・確認の表示は style.css（確認画面と共用）を使う。外部のフォント・画像は読まない。 */
+:root {
+  --ok: #1c6b34;
+  --ok-fill: #e3f1e6;
+  --ok-text: #0f4a20;
+  --bad-fill: #fde8ea;
+  --bad-text: #7f0d1b;
+  --field: #6b7783;
+}
+
+[hidden] { display: none !important; }
+
+/* ---- 全体 ---- */
+.dict-work {
+  flex: 1;
+  display: grid;
+  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  min-height: 0;
+}
+.loading { grid-column: 1 / -1; padding: 24px; font-size: 17px; }
+
+/* ---- 左: 辞書の種類 ---- */
+.kinds {
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  overflow-y: auto;
+  padding: 12px;
+}
+.kinds h2 { font-size: 13px; font-weight: 700; color: var(--ink-soft); letter-spacing: 0.06em; margin-bottom: 8px; }
+.kind-list { display: grid; gap: 4px; }
+.kind-btn {
+  width: 100%; text-align: left;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 2px 8px;
+  border-color: var(--line);
+}
+.kind-name { flex: 1 1 auto; }
+.kind-count { font-family: var(--mark); font-stretch: 85%; font-weight: 400; color: var(--ink-soft); white-space: nowrap; }
+.kind-changes {
+  flex-basis: 100%;
+  font-size: 12px; line-height: 1.5; font-weight: 700;
+  padding: 0 6px; border: 1px solid var(--warn); border-radius: 3px;
+  background: var(--warn-fill); color: #5a2d00;
+  width: fit-content;
+}
+.kind-btn[aria-current="true"] { border-color: var(--ink); box-shadow: inset 4px 0 0 var(--ink); background: #fff; font-weight: 700; }
+
+/* ---- 右: 選んだ辞書 ---- */
+.detail {
+  background: #fff;
+  overflow-y: auto;
+  padding: 16px 20px 24px;
+  display: flex; flex-direction: column; gap: 10px;
+  min-width: 0;
+}
+.detail:focus-visible { outline-offset: -3px; }
+.detail-title { font-size: 20px; font-weight: 700; }
+.line { display: flex; flex-wrap: wrap; gap: 0 8px; }
+.lbl { font-weight: 700; color: var(--ink-soft); white-space: nowrap; }
+.fine { font-size: 13px; color: var(--ink-soft); overflow-wrap: anywhere; }
+.card-note {
+  padding: 8px 12px;
+  border-left: 4px solid var(--warn); background: var(--warn-fill); color: #5a2d00;
+  font-size: 14px;
+}
+
+/* ---- 入力 ---- */
+.fields { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; }
+.field { display: grid; gap: 2px; flex: 1 1 14em; min-width: 0; }
+.field label { font-size: 13px; font-weight: 700; color: var(--ink-soft); }
+input[type="text"], input[type="search"] {
+  font: inherit; color: var(--ink);
+  width: 100%; min-width: 0; min-height: 36px; padding: 4px 8px;
+  background: #fff; border: 1px solid var(--field); border-radius: 4px;
+}
+input[aria-invalid="true"] { border: 2px solid var(--danger); }
+.add-form button { flex: none; }
+
+/* ---- 知らせ（色だけに頼らず、先頭の文言でも区別する） ---- */
+.msg { font-size: 14px; }
+.msg-ok, .msg-warn, .msg-error { padding: 8px 12px; border-left: 4px solid; }
+.msg-ok { background: var(--ok-fill); color: var(--ok-text); border-color: var(--ok); }
+.msg-warn { background: var(--warn-fill); color: #5a2d00; border-color: var(--warn); }
+.msg-error { background: var(--bad-fill); color: var(--bad-text); border-color: var(--danger); }
+.msg-head { font-weight: 700; }
+.msg ul { margin-top: 4px; padding-left: 1.4em; list-style: disc; }
+
+/* ---- 検索と一覧 ---- */
+.search-row { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 16px; margin-top: 6px; }
+.search-row .field { flex: 0 1 18em; }
+.count { font-size: 14px; color: var(--ink-soft); padding-bottom: 6px; }
+.empty { padding: 12px; color: var(--ink-soft); }
+
+.entries { display: grid; border-top: 1px solid var(--line); }
+.entries:empty { display: none; }
+.entry {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px;
+  padding: 6px 8px 6px 10px;
+  background: #fff;
+  border-bottom: 1px solid var(--line); border-left: 4px solid var(--line);
+  scroll-margin: 8px;
+}
+.entry-text { flex: 1 1 8em; min-width: 0; font-size: 16px; overflow-wrap: anywhere; }
+.entry-btn { flex: none; margin-left: auto; }
+.mark {
+  font-size: 13px; line-height: 1.5; font-weight: 700;
+  padding: 0 8px; border: 1px solid; border-radius: 3px;
+}
+.is-added { background: #f1f8f2; border-left-color: var(--ok); }
+.mark-added { background: var(--ok-fill); color: var(--ok-text); border-color: var(--ok); }
+.is-removed { background: #fbeff0; border-left: 4px dashed var(--danger); }
+.is-removed .entry-text { text-decoration: line-through; color: var(--ink-soft); }
+.mark-removed { background: var(--bad-fill); color: var(--bad-text); border-color: var(--danger); }
+.mark-dup { background: var(--warn-fill); color: #5a2d00; border-color: var(--warn); }
+
+/* ---- 保存・読み直しの結果 ---- */
+.result {
+  padding: 8px 16px;
+  background: var(--ok-fill); color: var(--ok-text);
+  border-bottom: 2px solid var(--ok);
+}
+.result:focus-visible { outline-offset: -3px; }
+.result h2 { font-size: 15px; font-weight: 700; }
+.result p { font-size: 14px; overflow-wrap: anywhere; }
+
+/* ---- 試し読みの結果（保存の結果と同じ帯の作り。青い線で区別し、文言でも区別する） ---- */
+.trial-result {
+  background: var(--panel); color: var(--ink);
+  border-bottom-color: var(--out);
+  max-height: 40vh; overflow-y: auto;
+}
+.trial-result p + p, .trial-result p + .trial-table-wrap, .trial-table-wrap + p { margin-top: 4px; }
+.trial-stale {
+  padding: 4px 8px; margin-bottom: 4px;
+  border-left: 4px solid var(--warn); background: var(--warn-fill); color: #5a2d00; font-weight: 700;
+}
+.trial-count { font-weight: 700; }
+.trial-care { font-weight: 700; }
+.trial-table-wrap { overflow-x: auto; max-width: 100%; }
+.trial-table { border-collapse: collapse; background: #fff; font-size: 14px; }
+.trial-table th, .trial-table td { padding: 2px 12px; border: 1px solid var(--line); text-align: left; }
+.trial-table thead th { background: #e7ecf0; white-space: nowrap; }
+.trial-table tbody th { font-weight: 400; }
+.trial-table td.num { font-family: var(--mark); font-stretch: 85%; text-align: right; white-space: nowrap; }
+
+/* ---- 試し読み中の覆い（中身の作りは style.css の .busy と同じ。「中止」を中に置くため、枠を p から箱へ移す） ---- */
+.busy .busy-box {
+  display: grid; justify-items: center; gap: 12px;
+  max-width: 480px; margin: 0 16px; padding: 20px 28px;
+  background: #fff; border: 1px solid var(--ink); border-radius: 6px;
+}
+.busy .busy-box p {
+  max-width: none; padding: 0; background: none; border: 0; border-radius: 0;
+  font-size: 17px; font-weight: 700; text-align: center;
+}
+.busy .busy-box p:focus-visible { outline-offset: 6px; }
+
+/* ---- 下の帯 ---- */
+.finish .totals { padding: 2px 8px; border-left: 4px solid transparent; }
+.finish .totals.has-changes { font-weight: 700; background: var(--warn-fill); color: #5a2d00; border-left-color: var(--warn); }
+
+/* ---- 拡大表示・小さい窓: 縦に並べ、ページ全体をスクロールする（style.css の同じ条件に合わせる） ---- */
+@media (max-width: 900px), (max-height: 560px) {
+  .dict-work { display: block; }
+  .kinds { overflow: visible; border: 0; border-bottom: 1px solid var(--line); }
+  .kind-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .kind-btn { width: auto; }
+  .kind-changes { flex-basis: auto; }
+  .detail { overflow: visible; padding: 16px; }
+  .search-row .field { flex: 1 1 14em; }
+  .trial-result { max-height: none; }
+  /* 下の帯は、長い一覧の途中からでも押せるよう、画面の下に付ける（帯は流れの中にあるので、一覧の最後は隠れない） */
+  .finish { position: sticky; bottom: 0; z-index: 10; box-shadow: 0 -2px 0 var(--line); }
+  html { scroll-padding-bottom: 9rem; }   /* 入力欄や行へ移った時に、帯の後ろへ隠れない */
+}
+
+/* 画面がとても低い時（400% の拡大など）は、帯が画面の 3 割を超えて一覧が読めなくなるので、固定をやめて流れに戻す */
+@media (max-height: 300px) {
+  .finish { position: static; box-shadow: none; }
+  html { scroll-padding-bottom: 0; }
+}
+
+/* ---- Windows のハイコントラスト: 色が消えるので、線の太さと形で区別する ---- */
+@media (forced-colors: active) {
+  .is-added { border-left-width: 8px; }
+  .is-removed { border-left-style: dashed; border-left-width: 8px; }
+  .mark { border-width: 2px; }
+}

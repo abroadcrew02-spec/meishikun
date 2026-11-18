@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>読み取りの辞書</title>
+<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="dict.css">
+</head>
+<body>
+<a id="skip" class="skip" href="#detail">辞書の内容へ移動</a>
+<p id="announce" class="sr" role="status"></p>
+
+<div id="app" class="app">
+  <header class="bar">
+    <h1>読み取りの辞書</h1>
+    <p class="where">読み取りに使う言葉を、足す・消す・保存します。保存するまで、辞書ファイルは変わりません。</p>
+  </header>
+
+  <div id="notice" class="notice" role="alert" hidden>
+    <p id="notice-text"></p>
+    <button type="button" id="notice-retry" hidden>もう一度つなぐ</button>
+    <button type="button" id="notice-reload" hidden>読み直す</button>
+  </div>
+
+  <section id="result" class="result" tabindex="-1" aria-labelledby="result-title" hidden>
+    <h2 id="result-title"></h2>
+    <div id="result-body"></div>
+  </section>
+
+  <section id="trial-result" class="result trial-result" tabindex="0" aria-labelledby="trial-result-title" hidden>
+    <h2 id="trial-result-title">試し読みの結果</h2>
+    <div id="trial-result-body"></div>
+  </section>
+
+  <main class="dict-work">
+    <p id="loading" class="loading">辞書を読み込んでいます</p>
+
+    <nav id="kinds" class="kinds" aria-labelledby="kinds-title" hidden>
+      <h2 id="kinds-title">辞書の種類</h2>
+      <ul id="kind-list" class="kind-list"></ul>
+    </nav>
+
+    <section id="detail" class="detail" tabindex="-1" aria-labelledby="detail-title" hidden>
+      <h2 id="detail-title" class="detail-title"></h2>
+      <p id="kind-desc"></p>
+      <p class="line"><span class="lbl">例:</span><span id="kind-example"></span></p>
+      <p class="line"><span class="lbl">こんな時に足す:</span><span id="kind-hint"></span></p>
+      <p id="kind-default" class="line" hidden>最初から入っている言葉で動いています。</p>
+      <p class="fine">辞書のファイル: dict フォルダの <span id="kind-file"></span></p>
+
+      <p id="card-note" class="card-note">足すのは語尾や見出しだけにしてください。会社名・氏名・電話番号など、名刺の内容そのものは登録しないでください。</p>
+      <form id="add-form" class="add-form" novalidate>
+        <div class="fields">
+          <div class="field">
+            <label id="label-a" for="add-a"></label>
+            <input id="add-a" type="text" maxlength="200" autocomplete="off" spellcheck="false" aria-describedby="card-note input-help add-msg">
+          </div>
+          <div id="field-b" class="field" hidden>
+            <label id="label-b" for="add-b"></label>
+            <input id="add-b" type="text" maxlength="200" autocomplete="off" spellcheck="false" aria-describedby="input-help add-msg">
+          </div>
+          <button type="submit" class="primary">追加</button>
+        </div>
+      </form>
+      <p id="input-help" class="fine"></p>
+      <p id="add-msg" class="msg" role="status"></p>
+
+      <div class="search-row" role="search">
+        <div class="field">
+          <label for="filter">検索</label>
+          <input id="filter" type="search" autocomplete="off" spellcheck="false">
+        </div>
+        <p id="count" class="count"></p>
+      </div>
+      <p id="row-msg" class="msg" role="status"></p>
+      <ul id="entries" class="entries"></ul>
+      <p id="empty" class="empty" hidden></p>
+    </section>
+  </main>
+
+  <footer class="finish">
+    <p id="pending" class="totals" role="status"></p>
+    <button type="button" id="trial" aria-describedby="pending" disabled>試し読み</button>
+    <button type="button" id="save" class="primary" aria-describedby="pending" disabled>保存する</button>
+    <button type="button" id="quit">終わる</button>
+  </footer>
+  <div id="busy" class="busy" hidden>
+    <div class="busy-box">
+      <p id="busy-text" tabindex="-1"></p>
+      <button type="button" id="trial-cancel" hidden>中止</button>
+    </div>
+  </div>
+</div>
+
+<dialog id="close-confirm" class="dialog" aria-labelledby="close-title" aria-describedby="close-text">
+  <h2 id="close-title">保存せずに終わりますか</h2>
+  <p id="close-text"></p>
+  <div class="dialog-actions">
+    <button type="button" id="close-back">作業に戻る</button>
+    <button type="button" id="close-ok" class="danger">取り消して終わる</button>
+  </div>
+</dialog>
+
+<section id="done" class="done" hidden aria-labelledby="done-title" tabindex="-1">
+  <h1 id="done-title"></h1>
+  <p id="done-lead"></p>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

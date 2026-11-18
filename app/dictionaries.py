@@ -10,6 +10,7 @@
 """
 from __future__ import annotations
 
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,10 +76,18 @@ def _read_text(path: Path, *, optional: bool) -> str | None:
         raise _error(path, None, f"UTF-8 として読めません: {exc}") from exc
 
 
+def is_blank_word(word: str) -> bool:
+    """空白と見えない文字（書式・制御）だけの語か。語として入れると、関係のない行まで拾う。"""
+    return not any(
+        not ch.isspace() and unicodedata.category(ch) not in ("Cf", "Cc") for ch in word
+    )
+
+
 def _data_lines(text: str | None) -> list[tuple[int, str]]:
     """`#` 始まりの行・空行を除いた (行番号, 内容) のリスト。行番号は 1 始まり。"""
     out: list[tuple[int, str]] = []
-    for i, raw_line in enumerate((text or "").splitlines(), start=1):
+    # 先頭の BOM は、ファイルから読む時（utf-8-sig）と同じく落とす（replace で渡された中身のため）
+    for i, raw_line in enumerate((text or "").removeprefix("\ufeff").splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -96,7 +105,7 @@ def _parse_words(
 ) -> tuple[str, ...]:
     # 正規化すると空になる語は入れない（空の語は、どんな文字列にも一致してしまう）
     words = [normalize(content, old_kanji).norm for _, content in _data_lines(text)]
-    words = [w for w in words if w.strip()]
+    words = [w for w in words if not is_blank_word(w)]
     if not words:
         if kind.required:
             raise _error(path, None, "1 行以上の語が必要です")
@@ -153,6 +162,11 @@ def load_dictionaries(dict_dir: Path, replace: Mapping[str, str] | None = None) 
     （保存の前に、書き換えた後の辞書の一式を検査する・試し読みで変更後の辞書を作る、のに使う）。
     既定の語を持つ種類（KINDS の default）は、ファイルが無い・語が無い時に既定の語で動く。
     """
+    if replace is not None:
+        unknown = set(replace) - {kind.filename for kind in KINDS}
+        if unknown:
+            raise ValueError(f"辞書のファイル名ではありません: {sorted(unknown)}")
+
     def text_of(kind: DictKind) -> tuple[Path, str | None]:
         path = dict_dir / kind.filename
         if replace is not None and kind.filename in replace:

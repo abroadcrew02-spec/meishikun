@@ -58,15 +58,24 @@ def _status(page_count: int, skipped: list[int], blank: list[int]) -> FileStatus
     return FileStatus.OK
 
 
-def _prepare_page(doc_page, page_index: int, s: "Settings", d: "Dictionaries") -> PreparedPage:
-    """1 ページを読み、TEXT ページなら名刺の枠を探して領域に分ける。"""
-    page = pdf_reader.read_page_with_cards(doc_page, s.textlayer, s.split)
+def _read_page(doc_page, s: "Settings"):
+    """1 ページの文字と、名刺の縁の線を読む（辞書を使わない）。"""
+    return pdf_reader.read_page_with_cards(doc_page, s.textlayer, s.split)
+
+
+def _segment_page(page, page_index: int, s: "Settings", d: "Dictionaries") -> PreparedPage:
+    """読んだページを、TEXT ページなら領域に分ける（辞書を使う）。渡された page は書き換えない。"""
     regions: list["Region"] = []
     if page.stats.kind == PageKind.TEXT:
         regions = segmenter.segment_page(page, s, d)
         # 線の切れ端は領域を決める時にしか使わない。確認画面は全ページを持ち続けるので捨てておく
         page = dataclasses.replace(page, card_edges=None)
     return PreparedPage(page_no=page_index + 1, data=page, regions=regions)
+
+
+def _prepare_page(doc_page, page_index: int, s: "Settings", d: "Dictionaries") -> PreparedPage:
+    """1 ページを読み、TEXT ページなら名刺の枠を探して領域に分ける。"""
+    return _segment_page(_read_page(doc_page, s), page_index, s, d)
 
 
 class _ResultBuilder:
@@ -176,6 +185,36 @@ def extract_pdf(path: Path, s: "Settings", d: "Dictionaries") -> PdfResult:
         raise
     except BaseException as exc:  # noqa: BLE001 - §4.2: 途中の例外はファイル全体を ERROR に
         return _error(path, ErrorKind.EXTRACT_FAILED, exc, page_count)
+    finally:
+        _close(doc)
+
+
+def compare_pdf(
+    path: Path, s: "Settings", before: "Dictionaries", after: "Dictionaries",
+) -> tuple[PdfResult, PdfResult]:
+    """path を 1 回だけ読み、2 つの辞書それぞれで領域の決定と振り分けを行う（辞書の試し読み用）。
+
+    1 つ目の結果は extract_pdf(path, s, before) と同じ。extract_pdf と同じく、例外は
+    KeyboardInterrupt だけを外に出す。失敗した時は、2 つとも同じ ERROR の結果を返す。
+    """
+    doc, failed = _open(path)
+    if failed is not None:
+        return failed, failed
+
+    page_count = 0
+    try:
+        page_count = doc.page_count
+        builders = (_ResultBuilder(path, page_count, s, before), _ResultBuilder(path, page_count, s, after))
+        for page_index in range(page_count):
+            page = _read_page(doc[page_index], s)      # 読むのは 1 回（fitz の呼び出しの順は extract_pdf と同じ）
+            builders[0].add_page(_segment_page(page, page_index, s, before))
+            builders[1].add_page(_segment_page(page, page_index, s, after))
+        return builders[0].result(), builders[1].result()
+    except KeyboardInterrupt:
+        raise
+    except BaseException as exc:  # noqa: BLE001 - §4.2: 途中の例外はファイル全体を ERROR に
+        failed = _error(path, ErrorKind.EXTRACT_FAILED, exc, page_count)
+        return failed, failed
     finally:
         _close(doc)
 

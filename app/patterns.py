@@ -142,13 +142,21 @@ def _org_suffix_words(words: tuple[str, ...]) -> tuple[str, ...]:
 
 
 def _branch(d: Dictionaries | None) -> _BranchRes:
-    return _branch_res(BRANCH_LABELS if d is None else d.branch_labels)
+    # tuple(...) は、語の一覧を list で持つ辞書（テストで手で組んだもの）でも cache の鍵にできるように
+    return _branch_res(BRANCH_LABELS if d is None else tuple(d.branch_labels))
 
 
 def _phone(d: Dictionaries | None) -> _PhoneRes:
     if d is None:
         return _phone_res(TEL_PREFIXES, FAX_PREFIXES)
-    return _phone_res(d.tel_prefixes, d.fax_prefixes)
+    return _phone_res(tuple(d.tel_prefixes), tuple(d.fax_prefixes))
+
+
+def warm(d: Dictionaries) -> None:
+    """辞書の語から作る正規表現を、ここで組み立てる（保存の前に、組み立てられることを確かめるのに使う）。"""
+    _branch(d)
+    _phone(d)
+    _org_suffix_words(tuple(d.org_suffixes))
 
 # ---- 氏名に使える文字（§10.7） ----
 
@@ -331,7 +339,7 @@ def is_name_like(norm: str, cfg: ClassifyCfg, d: Dictionaries) -> bool:
 
     if any(stripped.endswith(suf) for suf in d.dept_suffixes):
         return False
-    if stripped.endswith(_org_suffix_words(d.org_suffixes)):
+    if stripped.endswith(_org_suffix_words(tuple(d.org_suffixes))):
         return False
     if find_title(norm, d) is not None:
         return False

@@ -6,14 +6,44 @@ app.models への実行時依存は持たない（受け取った rows をその
 from __future__ import annotations
 
 import csv
+import io
 from collections.abc import Sequence
 from pathlib import Path
+from zipfile import ZIP_DEFLATED, ZipFile
 
 import openpyxl
 from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+from openpyxl.writer.excel import ExcelWriter
 
 # 先頭がこれらの文字なら CSV インジェクション対策で ' を付ける。
 _GUARD_PREFIXES: tuple[str, ...] = ("=", "+", "-", "@", "\t", "\r")
+
+
+def _is_unwritable(ch: str) -> bool:
+    """一覧表に書かない文字か（孤立サロゲートと、Unicode の非文字）。
+
+    PDF の文字の対応表が壊れていると、読み取りがこうした符号位置を返すことがある。孤立サロゲートは
+    UTF-8 にできず（CSV）、孤立サロゲートと U+FFFE・U+FFFF は XML に入れられず（xlsx）、書き出しが
+    途中で止まる。ほかの非文字は書けるが、文字としての意味が無いので、CSV と xlsx でそろえて取り除く。
+    """
+    cp = ord(ch)
+    return 0xD800 <= cp <= 0xDFFF or 0xFDD0 <= cp <= 0xFDEF or (cp & 0xFFFE) == 0xFFFE
+
+
+def clean_cell(value: object) -> str:
+    """セルの値を文字列にして、書けない文字を取り除く。"""
+    text = str(value)
+    if any(_is_unwritable(ch) for ch in text):
+        text = "".join(ch for ch in text if not _is_unwritable(ch))
+    return text
+
+
+def _discard(tmp: Path) -> None:
+    """書きかけ（名刺の内容が入りうる）を消す。消せなくても、元の失敗を隠さない。"""
+    try:
+        tmp.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def guard_cell(value: str) -> str:
@@ -31,19 +61,23 @@ def write_csv(path: Path, rows: Sequence[Sequence[str]]) -> Path:
     呼び出し側の責務（このモジュールはヘッダを特別扱いしない）。
     """
     tmp = path.with_name(path.name + ".tmp")
-    with tmp.open("w", encoding="utf-8-sig", newline="") as f:
-        # rows が空だと writer.writerow が一度も呼ばれず、utf-8-sig の BOM も
-        # 書き出されないまま 0 バイトになる。空書き込みで BOM だけを先に出しておく。
-        f.write("")
-        writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
-        for row in rows:
-            writer.writerow([guard_cell(str(cell)) for cell in row])
-    tmp.replace(path)
+    try:
+        with tmp.open("w", encoding="utf-8-sig", newline="") as f:
+            # rows が空だと writer.writerow が一度も呼ばれず、utf-8-sig の BOM も
+            # 書き出されないまま 0 バイトになる。空書き込みで BOM だけを先に出しておく。
+            f.write("")
+            writer = csv.writer(f, quoting=csv.QUOTE_ALL, lineterminator="\r\n")
+            for row in rows:
+                writer.writerow([guard_cell(clean_cell(cell)) for cell in row])
+        tmp.replace(path)
+    except BaseException:
+        _discard(tmp)
+        raise
     return path
 
 
-def write_xlsx(path: Path, rows: Sequence[Sequence[str]]) -> Path:
-    """全セル文字列型・書式 @ で xlsx を書く。
+def write_xlsx(path: Path, rows: Sequence[Sequence[str]], title: str = "名刺") -> Path:
+    """全セル文字列型・書式 @ で xlsx を書く。title はシートの名前。
 
     openpyxl は "=" で始まる文字列を数式と推定するため、値を入れた後に
     data_type="s" で明示的に上書きする（DESIGN.md §24 M18 実測）。
@@ -51,15 +85,29 @@ def write_xlsx(path: Path, rows: Sequence[Sequence[str]]) -> Path:
     tmp = path.with_name(path.name + ".tmp")
     wb = openpyxl.Workbook()
     ws = wb.active
-    ws.title = "名刺"
+    ws.title = title
     for row in rows:
-        values = [ILLEGAL_CHARACTERS_RE.sub("", str(cell)) for cell in row]
+        # 書けない文字を先に取り除く。openpyxl は、シートの中身を Windows の一時フォルダに書いてから
+        # まとめる。書く途中で止まると、その一時ファイル（名刺の内容が入る）が残ることがある
+        values = [ILLEGAL_CHARACTERS_RE.sub("", clean_cell(cell)) for cell in row]
         ws.append(values)
     for row_cells in ws.iter_rows():
         for cell in row_cells:
             cell.data_type = "s"
             cell.number_format = "@"
     ws.freeze_panes = "A2"
-    wb.save(tmp)
-    tmp.replace(path)
+    try:
+        # いったんメモリに組み立てる。wb.save() は、保存の途中で失敗しても書き出し先を閉じない。
+        # ファイルへ直に書かせると、開いたままの書きかけが残り、消すこともできない。
+        # 書き出し先（zip）は with で必ず閉じる
+        buf = io.BytesIO()
+        with ZipFile(buf, "w", ZIP_DEFLATED, allowZip64=True) as archive:
+            ExcelWriter(wb, archive).save()
+        tmp.write_bytes(buf.getvalue())
+        tmp.replace(path)
+    except BaseException:
+        _discard(tmp)
+        raise
+    finally:
+        wb.close()
     return path
