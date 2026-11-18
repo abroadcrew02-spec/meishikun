@@ -341,7 +341,7 @@ class SplitCfg:
     detect_dpi: int = 150
     detect_threshold: int = 250        # これより暗い画素を線の候補にする（255 = 白）
     detect_line_mm: float = 20.0       # この長さ以上の直線だけを縁とみなす
-    detect_gap_mm: float = 8.0         # 縁の線の途切れをこの長さまでつなぐ
+    detect_gap_mm: float = 4.0         # 縁の線の、この長さ未満の途切れをつなぐ（名刺どうしの間隔より短くする）
     card_short_mm_min: float = 40.0    # 名刺の大きさ（短辺・長辺）
     card_short_mm_max: float = 70.0
     card_long_mm_min: float = 75.0

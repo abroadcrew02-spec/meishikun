@@ -60,11 +60,9 @@ def _status(page_count: int, skipped: list[int], blank: list[int]) -> FileStatus
 
 def _prepare_page(doc_page, page_index: int, s: "Settings", d: "Dictionaries") -> PreparedPage:
     """1 ページを読み、TEXT ページなら名刺の枠を探して領域に分ける。"""
-    page = pdf_reader.read_page(doc_page, s.textlayer)
+    page = pdf_reader.read_page_with_cards(doc_page, s.textlayer, s.split)
     regions: list["Region"] = []
     if page.stats.kind == PageKind.TEXT:
-        boxes, edges = pdf_reader.detect_cards(doc_page, s.split)
-        page = dataclasses.replace(page, card_boxes=boxes, card_edges=edges)
         regions = segmenter.segment_page(page, s, d)
         # 線の切れ端は領域を決める時にしか使わない。確認画面は全ページを持ち続けるので捨てておく
         page = dataclasses.replace(page, card_edges=None)

@@ -171,13 +171,21 @@ def _iter_glyphs(page: fitz.Page, m: fitz.Matrix) -> tuple[tuple[Glyph, ...], in
     return tuple(glyphs), chars, invisible_chars, replacement_chars
 
 
-def _read(page: fitz.Page, cfg: "TextLayerCfg") -> PageData:
+def _read(page: fitz.Page, cfg: "TextLayerCfg", split_cfg: "SplitCfg | None" = None) -> PageData:
     m = page.rotation_matrix
     glyphs, chars, invisible_chars, replacement_chars = _iter_glyphs(page, m)
+    # 名刺の枠は、画像の配置を読む前に探す。get_image_info(xrefs=True) を呼ぶと、同じページの
+    # その後の描画結果が変わり（PyMuPDF 1.26.7 で実測。150dpi の 1 ページで約 9% の画素）、
+    # 縁の線が拾えなくなる名刺が出るため。文字の読み取り（rawdict）は描画に影響しない。
+    card_boxes: tuple["Rect4", ...] = ()
+    card_edges = None
+    is_text = chars >= cfg.min_chars
+    if split_cfg is not None and is_text:
+        card_boxes, card_edges = detect_cards(page, split_cfg)
     images = _read_images(page)
     rect = page.rect
 
-    if chars >= cfg.min_chars:
+    if is_text:
         kind = PageKind.TEXT
     elif images:
         kind = PageKind.NO_TEXT
@@ -196,7 +204,10 @@ def _read(page: fitz.Page, cfg: "TextLayerCfg") -> PageData:
         kind=kind,
     )
     to_pdf: "Matrix6" = tuple(page.derotation_matrix)  # type: ignore[assignment]
-    return PageData(stats=stats, glyphs=glyphs, images=images, to_pdf=to_pdf)
+    return PageData(
+        stats=stats, glyphs=glyphs, images=images, to_pdf=to_pdf,
+        card_boxes=card_boxes, card_edges=card_edges,
+    )
 
 
 def read_page_stats(page: fitz.Page, cfg: "TextLayerCfg") -> PageStats:
@@ -205,6 +216,15 @@ def read_page_stats(page: fitz.Page, cfg: "TextLayerCfg") -> PageStats:
 
 def read_page(page: fitz.Page, cfg: "TextLayerCfg") -> PageData:
     return _read(page, cfg)
+
+
+def read_page_with_cards(page: fitz.Page, cfg: "TextLayerCfg", split_cfg: "SplitCfg") -> PageData:
+    """ページを読み、TEXT ページなら名刺の枠（§7.8）と線の切れ端（§7.9）も入れて返す。
+
+    read_page の後に detect_cards を呼ぶのと違い、枠を探してから画像の配置を読む
+    （順番が逆だと描画が変わり、検出できる枠が減る）。
+    """
+    return _read(page, cfg, split_cfg)
 
 
 def detect_cards(page: fitz.Page, cfg: "SplitCfg"):

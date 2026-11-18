@@ -328,6 +328,9 @@ def _overlaps(span: tuple[int, int], taken: list[tuple[int, int]]) -> bool:
 
 # 〒 付き。OCR が 〒 を `T` と読む形（`T100-0001`）も受ける。直前が英数字（`PT100…`）なら不可。
 _POSTAL_MARK_RE = re.compile(r"(?<![A-Za-z0-9])(?:〒|T)\s*([0-9]{3})\s*-?\s*([0-9]{4})(?![0-9])")
+# OCR が 〒 を `+` と読む形（`+100-0001`）。国際電話の表記（`+81-3-0000-0000` `+813-0000-0000`）と
+# 区別するため、ハイフン入りの 3 桁-4 桁で、後ろに数字・ハイフンが続かないものだけを受ける。
+_POSTAL_PLUS_RE = re.compile(r"(?<![A-Za-z0-9+])\+\s*([0-9]{3})-([0-9]{4})(?![0-9\-])")
 # 記号無しの `NNN-NNNN`（2026-10-06・Q47）。前後が数字・ハイフンなら電話番号の一部なので不可
 # （`090-1234-5678` の `090-1234` は後ろのハイフン、`1234-5678` は前のハイフンで外れる）。
 # 空白を挟んだ文脈は _bare_postal_context_ok で見る（`(012) 345-6789` `TEL 345-6789` は電話）。
@@ -350,11 +353,23 @@ def _bare_postal_context_ok(work: str, start: int, end: int) -> bool:
     return True
 
 
+def _plus_postal_context_ok(work: str, end: int) -> bool:
+    """`+NNN-NNNN` の後ろに、空白を挟んで数字が続かないか（`+852-2345 6789` のような国際電話を除く）。
+
+    前は正規表現が見る（英数字・`+` の直後でないこと）。`(本社) +100-0001` や、同じ行の電話番号の後ろの
+    `+100-0001` も郵便番号として受けるので、記号無しの形（_bare_postal_context_ok）ほど前を絞らない。
+    """
+    after = work[end:].lstrip()
+    return not (after and (after[0] in "-)" or after[0].isdigit()))
+
+
 def _find_postal_hits(
     work: str, changed: list[bool], taken: list[tuple[int, int]],
 ) -> list[Hit]:
     hits: list[Hit] = []
-    for m in _POSTAL_MARK_RE.finditer(work):
+    marked = list(_POSTAL_MARK_RE.finditer(work))
+    marked += [m for m in _POSTAL_PLUS_RE.finditer(work) if _plus_postal_context_ok(work, m.end())]
+    for m in sorted(marked, key=lambda found: found.start()):
         span = m.span()
         if _overlaps(span, taken):
             continue

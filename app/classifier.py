@@ -222,6 +222,65 @@ def _is_postal_only(p: _Piece, line_hits: dict[int, list[Hit]]) -> bool:
     return not rest.strip(_TRIM_CHARS)
 
 
+def _postal_heading(p: _Piece, line_hits: dict[int, list[Hit]]) -> str | None:
+    """拠点ラベルと郵便番号だけの片（`本社 〒100-0001`）なら、その拠点ラベル（原文）。それ以外は None。
+
+    郵便番号の後ろに何かある片（`〒100-0001 千代田区…`）は住所そのものなので、対象にしない。
+    """
+    if len(p.parts) != 1:
+        return None
+    hit = _postal_hit_in(p, line_hits)
+    if hit is None:
+        return None
+    ln, s, e = p.parts[0]
+    if ln.text.norm[hit.end:e].strip(_TRIM_CHARS):
+        return None
+    before = ln.text.norm[s:hit.start].strip(_TRIM_CHARS)
+    if not before or not patterns.is_branch_label(before):
+        return None
+    return formatter.clean_spaces(ln.text.raw_slice(s, hit.start)).strip(_TRIM_CHARS)
+
+
+def _plus_marked(p: _Piece, line_hits: dict[int, list[Hit]]) -> bool:
+    """郵便番号の印が `+`（〒 の読み違い）の片か。"""
+    hit = _postal_hit_in(p, line_hits)
+    if hit is None:
+        return False
+    return p.parts[0][0].text.norm[hit.start:hit.start + 1] == "+"
+
+
+def _address_start_below(
+    p: _Piece, pieces: list[_Piece], line_hits: dict[int, list[Hit]],
+) -> _Piece | None:
+    """p のすぐ下の行にある、都道府県で始まり自分の郵便番号を持たない片（無ければ None）。
+
+    「すぐ下」は、_find_adjacent_postal が直上の郵便番号を探す時と同じ測り方（x が重なり、隙間が
+    住所の行の高さの 1.5 倍以内）に入る行のうち、いちばん近い行。行が詰まった名刺で、間の行を
+    飛び越えて 2 行先の住所を拾わないため。
+    """
+    ln0 = p.parts[0][0]
+    near: list[tuple[float, _Piece]] = []
+    for c in pieces:
+        if len(c.parts) != 1:
+            continue
+        ln, s, e = c.parts[0]
+        if ln is ln0 or not _x_overlaps(ln.bbox, ln0.bbox):
+            continue
+        gap = ln.bbox[1] - ln0.bbox[3]
+        if 0 <= gap <= _POSTAL_ATTACH_GAP_RATIO * geometry.height(ln.bbox):
+            near.append((gap, c))
+    if not near:
+        return None
+    nearest = min(gap for gap, _ in near)
+    for gap, c in near:
+        if gap != nearest:
+            continue
+        ln, s, e = c.parts[0]
+        if not _piece_has_postal(c, line_hits) and patterns.is_address_start(ln.text.norm[s:e], False):
+            return c
+    return None
+
+
 # ---------------------------------------------------------------------------
 # §11.2: 電話と FAX の確定
 # ---------------------------------------------------------------------------
@@ -603,39 +662,148 @@ def _split_mid_address(p: _Piece) -> list[_Piece]:
     return out
 
 
+def _directly_below(upper: TextLine, lower: TextLine) -> bool:
+    """lower が upper の直下（x が重なり、隙間が upper の行の高さの 1.5 倍以内）にあるか。"""
+    if lower is upper or not _x_overlaps(lower.bbox, upper.bbox):
+        return False
+    gap = lower.bbox[1] - upper.bbox[3]
+    return 0 <= gap <= _POSTAL_ATTACH_GAP_RATIO * geometry.height(upper.bbox)
+
+
 def _find_adjacent_postal(
-    chain: list[_Piece], remaining: list[_Piece], line_hits: dict[int, list[Hit]],
+    start: _Piece, last: _Piece, head: _Piece, candidates: list[_Piece], downward: set[int],
 ) -> _Piece | None:
-    """住所の直下（優先）か直上にある郵便番号だけの片（§11.5-6）。"""
-    first = chain[0].parts[0][0]
-    last = chain[-1].parts[0][0]
-    candidates = sorted(
-        (p for p in remaining if _is_postal_only(p, line_hits)), key=_piece_row_col,
-    )
-    for ref, below in ((last, True), (first, False)):
-        h = geometry.height(ref.bbox)
-        for c in candidates:
+    """住所に付ける郵便番号の片（§11.5-6）。start は住所の最初の行、last は最後の行、head は住所の
+    先頭の片（頭に拠点ラベルの片を付けた時はその片。それ以外は start）。
+
+    1. 最初の行の直上にある「下の住所のための片」（downward。`+100-0001`・`本社 〒100-0001`）
+    2. 郵便番号だけの片（従来どおり）: 最後の行の直下 → 最初の行の直上 → 先頭の片の直上 の順。
+       downward の片はここでは候補にしない（下にある別の住所のものを、上の住所に付けないため）
+    """
+    ordered = sorted(candidates, key=_piece_row_col)
+    for ref, below, own in (
+        (start, False, True), (last, True, False), (start, False, False), (head, False, False),
+    ):
+        ref_ln = ref.parts[0][0]
+        h = geometry.height(ref_ln.bbox)
+        for c in ordered:
             lnc = c.parts[0][0]
-            if lnc is ref or not _x_overlaps(lnc.bbox, ref.bbox):
+            if (id(c) in downward) != own:
                 continue
-            gap = lnc.bbox[1] - ref.bbox[3] if below else ref.bbox[1] - lnc.bbox[3]
+            if lnc is ref_ln or not _x_overlaps(lnc.bbox, ref_ln.bbox):
+                continue
+            gap = lnc.bbox[1] - ref_ln.bbox[3] if below else ref_ln.bbox[1] - lnc.bbox[3]
             if 0 <= gap <= _POSTAL_ATTACH_GAP_RATIO * h:
                 return c
     return None
+
+
+def _postal_pieces(
+    pieces: list[_Piece], line_hits: dict[int, list[Hit]],
+) -> tuple[set[int], dict[int, str], set[int]]:
+    """住所の開始にせず、隣の住所に付ける「郵便番号の片」を決める。
+
+    戻り値は (郵便番号の片の id, 見出しの片の id → 拠点ラベル, 下の住所のための片の id)。
+
+    - 郵便番号だけの片（`〒100-0001`）: 従来どおり（§11.5-6）。上下どちらの住所にも付く
+    - 〒 を `+` と読んだ片（`+100-0001`）と、拠点ラベルつきの片（`本社 〒100-0001`）: すぐ下の行が都道府県で
+      始まる住所の時だけ、その住所のための片にする。それ以外（すぐ下が `千代田区…` のように都道府県を書かない
+      住所、下に住所が無い）は、郵便番号を含む片としてこれまでどおり住所の開始にする（§10.8）。都道府県を
+      書かない住所を、開始を失って未分類に落とさないため
+    - 拠点ラベルつきの片は、下の住所が自分の拠点ラベルで始まっている時（`大阪支店 大阪府…`）も、
+      これまでどおり住所の開始にする（別の拠点の見出しを重ねて付けない）
+    """
+    ids: set[int] = set()
+    headings: dict[int, str] = {}
+    downward: set[int] = set()
+    for p in pieces:
+        if _is_postal_only(p, line_hits):
+            if not _plus_marked(p, line_hits):
+                ids.add(id(p))
+            elif _address_start_below(p, pieces, line_hits) is not None:
+                ids.add(id(p))
+                downward.add(id(p))
+            continue
+        label = _postal_heading(p, line_hits)
+        if not label:
+            continue
+        below = _address_start_below(p, pieces, line_hits)
+        # 下の住所が自分の拠点ラベルで始まっている時（`大阪支店 大阪府…`）は、その住所の見出しではない
+        if below is not None and not _starts_with_branch_label(below):
+            ids.add(id(p))
+            headings[id(p)] = label
+            downward.add(id(p))
+    return ids, headings, downward
+
+
+# 番地・階数を含む行（都道府県を書かない住所や、住所の続きの行）の目印
+_STREET_NUMBER_RE = re.compile(r"[0-9]|丁目|番地")
+
+
+def _undecided_plus_pieces(
+    chains: list[tuple[list[_Piece], _Piece, bool]],
+    remaining: list[_Piece],
+    postal_ids: set[int],
+    downward: set[int],
+    headings: dict[int, str],
+    line_hits: dict[int, list[Hit]],
+) -> set[int]:
+    """`+` の片（`+100-0001`）のうち、上の行のものか下の住所のものか決められないものの id。
+
+    `+` の行は、上の住所の下の行（`東京都…`／`+100-0001 TEL …`）のことも、下の住所の上の行のこともある。
+    位置だけでは決められないので、すぐ上に次のどちらかがある片は、どの住所にも付けない
+    （別の住所の郵便番号を付けない。直す前と同じく、住所なしの項目として出す）。
+
+    - 住所の最後の行
+    - 住所として読めなかった番地らしい行（数字・丁目・番地を含む片）。都道府県を書かない住所
+      （`千代田区丸の内1-1-1`）や、行の間が広くて住所につながらなかった続きの行（`ダミービル5F`）
+
+    拠点ラベルつきの片（`本社 〒…`）は下の住所の見出しなので、対象にしない。すぐ上が郵便番号だけの行
+    （`+100-0001`／`+530-0001`／`大阪府…` の 1 行目。郵便番号を含むので住所の開始になっている）の時は、
+    上に住所の行は無いものとして扱う。remaining は、住所の片を取り除いた後の残りの片。
+    """
+    lasts = [
+        chain[-1].parts[0][0] for chain, _first, _has_label in chains
+        if not (len(chain) == 1 and _is_postal_only(chain[0], line_hits))
+    ]
+    out: set[int] = set()
+    for p in remaining:
+        if id(p) not in downward or id(p) in headings:
+            continue
+        ln = p.parts[0][0]
+        if any(_directly_below(last, ln) for last in lasts):
+            out.add(id(p))
+            continue
+        for c in remaining:
+            if c is p or len(c.parts) != 1 or id(c) in postal_ids:
+                continue
+            lnc, cs, ce = c.parts[0]
+            if _directly_below(lnc, ln) and _STREET_NUMBER_RE.search(lnc.text.norm[cs:ce]):
+                out.add(id(p))
+                break
+    return out
+
+
+def _starts_with_branch_label(p: _Piece) -> bool:
+    ln, s, e = p.parts[0]
+    words = ln.text.norm[s:e].split()
+    return bool(words) and patterns.is_branch_label(words[0])
 
 
 def _extract_addresses(
     pieces: list[_Piece], cfg: ClassifyCfg, line_hits: dict[int, list[Hit]],
 ) -> tuple[list[_Piece], list[str], list[str]]:
     remaining = list(pieces)
-    chains: list[list[_Piece]] = []
+    postal_ids, headings, downward = _postal_pieces(pieces, line_hits)
+    # (住所の片, 住所の最初の行の片, 拠点ラベルが頭に付いているか)
+    chains: list[tuple[list[_Piece], _Piece, bool]] = []
 
     while True:
         start: _Piece | None = None
         for p in sorted(
             (p for p in remaining if len(p.parts) == 1), key=_piece_row_col,
         ):
-            if _is_postal_only(p, line_hits):
+            if id(p) in postal_ids:
                 continue
             ln, s, e = p.parts[0]
             norm = ln.text.norm[s:e]
@@ -658,31 +826,42 @@ def _extract_addresses(
             label_piece = _find_branch_label(part, remaining)
             if label_piece is not None:
                 remaining.remove(label_piece)
-                chains.append([label_piece, *chain_lines])
+                chains.append(([label_piece, *chain_lines], part, True))
             else:
-                chains.append(chain_lines)
+                chains.append((chain_lines, part, _starts_with_branch_label(part)))
 
+    undecided = _undecided_plus_pieces(chains, remaining, postal_ids, downward, headings, line_hits)
     addresses: list[str] = []
     postals: list[str] = []
-    for chain in chains:
+    for chain, first, has_label in chains:
         address, postal = _address_text_and_postal(chain, line_hits)
         if not postal:
-            po = _find_adjacent_postal(chain, remaining, line_hits)
+            candidates = [p for p in remaining if id(p) in postal_ids and id(p) not in undecided]
+            po = _find_adjacent_postal(first, chain[-1], chain[0], candidates, downward)
             if po is not None:
                 remaining.remove(po)
                 hit = _postal_hit_in(po, line_hits)
                 postal = formatter.format_postal(hit.digits) if hit else ""
+                above = po.parts[0][0].bbox[1] < first.parts[0][0].bbox[1]
+                if id(po) in headings:
+                    # 郵便番号の行にあった拠点ラベルは、住所の頭に付ける（`本社 東京都…`）
+                    address = formatter.clean_spaces(f"{headings[id(po)]} {address}")
+                elif above and not has_label:
+                    # 拠点ラベル／郵便番号／住所 と 3 行に分かれた形。郵便番号の行の上（か左）の
+                    # 拠点ラベルの片を住所の頭に付ける（未分類に落とさない）
+                    heading = _find_branch_label(po, remaining)
+                    if heading is not None:
+                        remaining.remove(heading)
+                        address = formatter.clean_spaces(f"{_piece_raw(heading)} {address}")
         addresses.append(address)
         postals.append(postal)
 
-    # どの住所にも付かなかった郵便番号だけの片は、住所 "" の項目にする（郵便番号列に出す）
-    orphans = sorted(
-        (p for p in remaining if _is_postal_only(p, line_hits)), key=_piece_row_col,
-    )
+    # どの住所にも付かなかった郵便番号の片は、住所 ""（見出しの片ならその拠点ラベル）の項目にする
+    orphans = sorted((p for p in remaining if id(p) in postal_ids), key=_piece_row_col)
     for p in orphans:
         remaining.remove(p)
         hit = _postal_hit_in(p, line_hits)
-        addresses.append("")
+        addresses.append(headings.get(id(p), ""))
         postals.append(formatter.format_postal(hit.digits) if hit else "")
 
     return remaining, addresses, postals

@@ -10,7 +10,6 @@ DESIGN.md §4.3・§16・§19.2 を実装する。pdf_reader・segmenter・label
 """
 from __future__ import annotations
 
-import dataclasses
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -101,10 +100,11 @@ def _diagnose_one(
         page_count = doc.page_count
         _emit(logger, f"[file] {pdf.name}  pages={page_count}")
         for page_index in range(page_count):
-            page_data = pdf_reader.read_page(doc[page_index], s.textlayer)
-            if with_split and str(page_data.stats.kind) == "text":
-                boxes, edges = pdf_reader.detect_cards(doc[page_index], s.split)
-                page_data = dataclasses.replace(page_data, card_boxes=boxes, card_edges=edges)
+            # 本番（extract）と同じ順番で読む（枠を探してから画像の配置を読む）
+            if with_split:
+                page_data = pdf_reader.read_page_with_cards(doc[page_index], s.textlayer, s.split)
+            else:
+                page_data = pdf_reader.read_page(doc[page_index], s.textlayer)
             stats = page_data.stats
             w_mm = stats.width / _PT_PER_MM
             h_mm = stats.height / _PT_PER_MM
