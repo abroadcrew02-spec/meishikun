@@ -288,7 +288,7 @@
     }
     const msg = $('sheet-msg');
     if (!pg.frames.length && !$('sheet').classList.contains('loading')) {
-      msg.textContent = 'このページには枠がありません。「枠を追加」で名刺を囲んでください。';
+      setText(msg, 'このページには枠がありません。「枠を追加」で名刺を囲んでください。');
       msg.hidden = false;
     } else if (!$('sheet').classList.contains('loading')) {
       msg.hidden = true;
@@ -440,8 +440,7 @@
       $('sheet').classList.remove('loading');
       const msg = $('sheet-msg');
       msg.textContent = 'ページの画像を表示できませんでした。黒い画面を閉じていないか確かめ、左の一覧からこのページを開き直してください。';
-      msg.hidden = false;
-      announce(msg.textContent);
+      msg.hidden = false;   // この表示（role="status"）だけで伝える
     };
     probe.src = url;
   }
@@ -884,7 +883,7 @@
   }
 
   function onGlobalKey(e) {
-    if (dialogOpen() || st.ended) return;
+    if (dialogOpen() || st.ended || st.busy) return;   // 出力中は、選択を外すなどのキー操作も受け付けない
     const typing = e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement;
     if (typing) return;
     const mod = e.ctrlKey || e.metaKey;
@@ -968,12 +967,10 @@
     for (const part of document.querySelectorAll('.bar, .work, .finish')) part.inert = on;
     $('busy').hidden = !on;
     $('busy-text').textContent = on ? text : '';
-    if (on) {
-      $('busy-text').focus({ preventScroll: true });
-      announce(text.replace(/\n/g, ' '));
-    } else if (!st.ended) {
-      $('finish').focus({ preventScroll: true });
-    }
+    // 知らせは、フォーカスを移した表示だけにする（同じ文を 2 回読ませない）。出力中はスキップリンクも隠す
+    $('skip').hidden = on;
+    if (on) $('busy-text').focus({ preventScroll: true });
+    else if (!st.ended) $('finish').focus({ preventScroll: true });
   }
 
   // 出力の途中で画面を開き直した時。終わるまで待って結果を出す

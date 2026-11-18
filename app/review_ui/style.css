@@ -224,13 +224,17 @@ button.danger:active:not(:disabled) { background: #7f0d1b; }
 
 .draw-layer { cursor: crosshair; z-index: 5; touch-action: none; }
 .draw-layer[hidden] { display: none; }
-.rubber { position: absolute; border: 2px dashed var(--ink); background: rgba(28, 37, 48, 0.08); }
+.rubber {
+  position: absolute; border: 2px dashed var(--ink); background: rgba(28, 37, 48, 0.08);
+  box-shadow: 0 0 0 1px #fff, inset 0 0 0 1px #fff;
+}
 
 .draw-hint { padding: 8px 16px; background: var(--ink); color: #fff; font-size: 14px; }
 
 /* ---- 右: このページの枠 ---- */
 .page-summary { font-size: 14px; }
 .frame-list { display: grid; gap: 4px; }
+.frame, .frame-item, .page-btn { scroll-margin: 12px; }
 .frame-list:empty { display: none; }
 .frame-item {
   width: 100%; text-align: left;
@@ -303,6 +307,7 @@ button.danger:active:not(:disabled) { background: #7f0d1b; }
 .done-table th, .done-table td { padding: 8px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; overflow-wrap: anywhere; }
 .done-table th { background: var(--panel); font-size: 13px; }
 .done-table thead th { white-space: nowrap; }
+.done-table td:nth-child(2) { min-width: 9em; }
 .done-table td.num { font-family: var(--mark); font-stretch: 85%; text-align: right; white-space: nowrap; }
 .done-foot { margin-top: 20px; color: var(--ink-soft); }
 
