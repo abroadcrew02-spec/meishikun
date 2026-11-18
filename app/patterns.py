@@ -4,9 +4,21 @@ norm 上の位置を返す。英字の照合は大文字小文字を区別しな
 """
 from __future__ import annotations
 
+import functools
 import re
+from dataclasses import dataclass
 
-from app.models import ClassifyCfg, Dictionaries, Hit, HitKind, NormText
+from app.models import (
+    BRANCH_LABELS,
+    FAX_PREFIXES,
+    ORG_SUFFIXES,
+    TEL_PREFIXES,
+    ClassifyCfg,
+    Dictionaries,
+    Hit,
+    HitKind,
+    NormText,
+)
 from app.textnorm import compact_view, fix_ocr_digits
 
 # ---- §10.8: 都道府県・拠点ラベル ----
@@ -23,25 +35,9 @@ PREFECTURES: tuple[str, ...] = (
     "福岡県", "佐賀県", "長崎県", "熊本県", "大分県", "宮崎県", "鹿児島県", "沖縄県",
 )
 
-# 法人格の無い組織名（`見本銀行` `見本工業` `見本不動産協会`）を氏名らしい語にしないための語尾
-# （§10.7・2026-10-06・Q50）。人名がこれらで終わることはまず無い。
-ORG_SUFFIXES: tuple[str, ...] = (
-    "銀行", "信用金庫", "信用組合", "証券", "保険", "大学", "高校", "学校", "学園", "病院", "医院",
-    "協会", "組合", "連合会", "財団", "法人", "事務所", "商店", "商会", "商事", "物産", "工業", "産業",
-    "興業", "鉱業", "製作所", "研究所", "電機", "電器", "電気", "不動産", "建設", "運輸", "通信",
-    "出版", "印刷", "書店", "薬局", "ホールディングス", "グループ", "センター", "サービス",
-    "システム", "システムズ", "エンジニアリング", "コーポレーション", "カンパニー", "ネットワーク",
-    "テクノロジー", "テクノロジーズ", "ソリューション", "ソリューションズ", "クリニック",
-)
-
-BRANCH_LABELS: tuple[str, ...] = (
-    "本社", "本店", "支社", "支店", "営業所", "事業所", "工場", "研究所", "センター", "オフィス",
-)
-
-# ---- §10.2: 電話・FAX の接頭辞 ----
-
-TEL_PREFIXES: tuple[str, ...] = ("TEL", "T", "電話", "代表", "直通", "携帯", "MOBILE")
-FAX_PREFIXES: tuple[str, ...] = ("FAX", "F")
+# 拠点の語（BRANCH_LABELS）・組織名の語尾（ORG_SUFFIXES）・電話と FAX の見出し（TEL_PREFIXES・FAX_PREFIXES）は
+# 辞書ファイルから読む（§18.2）。既定の語は models にあり、ここでは同じ名前で参照する。
+# 語の一覧を受け取る関数は `d: Dictionaries | None` を取る。None は既定の語。
 
 # ---- §10.4: URL の TLD ----
 
@@ -55,30 +51,104 @@ _COMPOUND_TLDS = frozenset(t for t in URL_TLDS if "." in t)
 _SIMPLE_TLDS = frozenset(t for t in URL_TLDS if "." not in t)
 
 _PREF_ALT = "|".join(re.escape(p) for p in PREFECTURES)
-_BRANCH_LABEL_WORDS_ALT = "|".join(re.escape(b) for b in BRANCH_LABELS)
-_BRANCH_LABEL_CORE = (
-    r"[【\[(<「]?\S{0,8}?(?:" + _BRANCH_LABEL_WORDS_ALT + r")[】\])>」]?[:：]?"
-)
-
-_BRANCH_LABEL_RE = re.compile(r"^(?:" + _BRANCH_LABEL_CORE + r")$")
 _POSTAL_OPT = r"(?:〒?\s*[0-9]{3}\s*-?\s*[0-9]{4}\s*)?"
-# 住所開始（§10.8）。拠点ラベル語に無い任意のラベル（`サテライト★ミホン 東京都…`）も、
-# 空白で区切られていれば 12 文字まで許す。法人格を含む行は手順 2 で先に会社名になる。
-_ADDRESS_START_RE = re.compile(
-    r"^(?:(?:" + _BRANCH_LABEL_CORE + r")\s*|\S{1,12}\s+)?"
-    + _POSTAL_OPT
-    + r"(?:" + _PREF_ALT + r")"
-)
-# 行の途中から始まる 2 件目の住所（拠点ラベル＋都道府県）。2 段組みが 1 行に連結された時用
-_MID_ADDRESS_START_RE = re.compile(
-    r"\s+((?:" + _BRANCH_LABEL_CORE + r")\s*" + _POSTAL_OPT + r"(?:" + _PREF_ALT + r"))"
-)
 
-_LABEL_ONLY_RE = re.compile(
-    r"^(?:TEL|FAX|T|F|E-?mail|Mail|URL|HP|Web|〒|電話|代表|直通|携帯|Mobile|メール)?"
-    r"[\s:：/・|.,、。\-]*$",
-    re.IGNORECASE,
-)
+
+# ---- 辞書の語から作る正規表現（§18.2・I16） ----
+#
+# 語の組（tuple）を鍵にして作り置く。辞書は実行ごとに読み直すが、中身が同じなら作り直さない
+# （中身で引くので、辞書を差し替えれば必ず効く）。
+
+
+def _words(words: tuple[str, ...], default: tuple[str, ...]) -> tuple[str, ...]:
+    """空の語（空白だけの語を含む）を除く。1 語も残らなければ既定の語。"""
+    kept = tuple(w for w in words if w.strip())
+    return kept or default
+
+
+def _alternation(
+    words: tuple[str, ...], default: tuple[str, ...], extra: tuple[str, ...] = (),
+) -> str:
+    """辞書の語から正規表現の選択肢を作る、ただ 1 つの入口。
+
+    空の語を捨て、語は必ず re.escape を通す（空の選択肢が 1 つ入ると、どんな文字列にも一致する。
+    `TEL(` のような語をそのままつなぐと、正規表現を組み立てられない）。extra は固定の正規表現の断片。
+    """
+    return "|".join([re.escape(w) for w in _words(words, default)] + list(extra))
+
+
+@dataclass(frozen=True)
+class _BranchRes:
+    label: re.Pattern[str]              # 片の全体が拠点ラベル
+    address_start: re.Pattern[str]      # 住所の開始（§10.8）
+    mid_address_start: re.Pattern[str]  # 行の途中から始まる 2 件目の住所
+
+
+@functools.lru_cache(maxsize=16)
+def _branch_res(labels: tuple[str, ...]) -> _BranchRes:
+    core = (
+        r"[【\[(<「]?\S{0,8}?(?:" + _alternation(labels, BRANCH_LABELS) + r")[】\])>」]?[:：]?"
+    )
+    return _BranchRes(
+        label=re.compile(r"^(?:" + core + r")$"),
+        # 住所開始（§10.8）。拠点の語に無い任意のラベル（`サテライト★ミホン 東京都…`）も、
+        # 空白で区切られていれば 12 文字まで許す。法人格を含む行は手順 2 で先に会社名になる。
+        address_start=re.compile(
+            r"^(?:(?:" + core + r")\s*|\S{1,12}\s+)?" + _POSTAL_OPT + r"(?:" + _PREF_ALT + r")"
+        ),
+        # 行の途中から始まる 2 件目の住所（拠点ラベル＋都道府県）。2 段組みが 1 行に連結された時用
+        mid_address_start=re.compile(
+            r"\s+((?:" + core + r")\s*" + _POSTAL_OPT + r"(?:" + _PREF_ALT + r"))"
+        ),
+    )
+
+
+@dataclass(frozen=True)
+class _PhoneRes:
+    combo: re.Pattern[str]          # `TEL/FAX` のように、電話と FAX の見出しが並んだ形
+    single: re.Pattern[str]         # 電話か FAX の見出し 1 つ
+    fax_words: frozenset[str]       # FAX の見出し（casefold 済み）
+    label_only: re.Pattern[str]     # 見出しだけの片（§11.1-2）
+    label_before: re.Pattern[str]   # 記号の無い `NNN-NNNN` の直前の見出し（電話番号とみなす）
+
+
+@functools.lru_cache(maxsize=16)
+def _phone_res(tel: tuple[str, ...], fax: tuple[str, ...]) -> _PhoneRes:
+    tel_words = _words(tel, TEL_PREFIXES)
+    fax_words = _words(fax, FAX_PREFIXES)
+    both = tel_words + fax_words
+    tel_alt = _alternation(tel_words, TEL_PREFIXES)
+    fax_alt = _alternation(fax_words, FAX_PREFIXES)
+    # 1 文字の見出し（T・F）は、ここでは見出しにしない（`T 100-0001` の T は 〒 の読み違い）
+    long_words = tuple(w for w in both if len(w) >= 2)
+    return _PhoneRes(
+        combo=re.compile(r"(" + tel_alt + r")\s*[/・&､、,]\s*(" + fax_alt + r")$", re.IGNORECASE),
+        single=re.compile(r"(" + tel_alt + r"|" + fax_alt + r")$", re.IGNORECASE),
+        fax_words=frozenset(w.casefold() for w in fax_words),
+        label_only=re.compile(
+            r"^(?:" + _alternation(both, both, ("E-?mail", "Mail", "URL", "HP", "Web", "〒", "メール"))
+            + r")?[\s:：/・|.,、。\-]*$",
+            re.IGNORECASE,
+        ),
+        label_before=re.compile(
+            r"(?:" + _alternation(long_words, (), ("PHONE", "ＦＡＸ")) + r")[\s:：.]*$", re.IGNORECASE,
+        ),
+    )
+
+
+@functools.lru_cache(maxsize=16)
+def _org_suffix_words(words: tuple[str, ...]) -> tuple[str, ...]:
+    return _words(words, ORG_SUFFIXES)
+
+
+def _branch(d: Dictionaries | None) -> _BranchRes:
+    return _branch_res(BRANCH_LABELS if d is None else d.branch_labels)
+
+
+def _phone(d: Dictionaries | None) -> _PhoneRes:
+    if d is None:
+        return _phone_res(TEL_PREFIXES, FAX_PREFIXES)
+    return _phone_res(d.tel_prefixes, d.fax_prefixes)
 
 # ---- 氏名に使える文字（§10.7） ----
 
@@ -261,36 +331,38 @@ def is_name_like(norm: str, cfg: ClassifyCfg, d: Dictionaries) -> bool:
 
     if any(stripped.endswith(suf) for suf in d.dept_suffixes):
         return False
-    if stripped.endswith(ORG_SUFFIXES):
+    if stripped.endswith(_org_suffix_words(d.org_suffixes)):
         return False
     if find_title(norm, d) is not None:
         return False
     if find_company(norm, d) is not None:
         return False
-    if is_branch_label(norm):
+    if is_branch_label(norm, d):
         return False
     if _starts_with_prefecture(norm):
         return False
     return True
 
 
-def is_address_start(norm: str, has_postal: bool) -> bool:
+def is_address_start(norm: str, has_postal: bool, d: Dictionaries | None = None) -> bool:
     if has_postal:
         return True
-    return bool(_ADDRESS_START_RE.match(norm))
+    return bool(_branch(d).address_start.match(norm))
 
 
-def find_mid_address_start(norm: str, start: int, end: int) -> int | None:
+def find_mid_address_start(
+    norm: str, start: int, end: int, d: Dictionaries | None = None,
+) -> int | None:
     """norm[start:end] の途中から始まる 2 件目の住所の開始位置（norm 上の絶対位置）。
 
     拠点ラベル＋（郵便番号）＋都道府県の並びを探す。無ければ None（§10.8）。
     """
-    m = _MID_ADDRESS_START_RE.search(norm, start, end)
+    m = _branch(d).mid_address_start.search(norm, start, end)
     return m.start(1) if m else None
 
 
-def is_branch_label(norm: str) -> bool:
-    return bool(_BRANCH_LABEL_RE.match(norm))
+def is_branch_label(norm: str, d: Dictionaries | None = None) -> bool:
+    return bool(_branch(d).label.match(norm))
 
 
 def is_department(norm: str, d: Dictionaries) -> bool:
@@ -307,13 +379,13 @@ def is_department(norm: str, d: Dictionaries) -> bool:
         s = s[:-1]
     if not any(s.endswith(suf) for suf in d.dept_suffixes):
         return False
-    if is_branch_label(norm) or _starts_with_prefecture(norm):
+    if is_branch_label(norm, d) or _starts_with_prefecture(norm):
         return False
     return find_company(norm, d) is None
 
 
-def is_label_only(norm: str) -> bool:
-    if _LABEL_ONLY_RE.fullmatch(norm):
+def is_label_only(norm: str, d: Dictionaries | None = None) -> bool:
+    if _phone(d).label_only.fullmatch(norm):
         return True
     return len(norm.strip()) <= 1
 
@@ -335,17 +407,17 @@ _POSTAL_PLUS_RE = re.compile(r"(?<![A-Za-z0-9+])\+\s*([0-9]{3})-([0-9]{4})(?![0-
 # （`090-1234-5678` の `090-1234` は後ろのハイフン、`1234-5678` は前のハイフンで外れる）。
 # 空白を挟んだ文脈は _bare_postal_context_ok で見る（`(012) 345-6789` `TEL 345-6789` は電話）。
 _POSTAL_BARE_RE = re.compile(r"(?<![0-9\-])([0-9]{3})-([0-9]{4})(?![0-9\-])")
-_PHONE_LABEL_BEFORE_RE = re.compile(
-    r"(?:TEL|FAX|PHONE|MOBILE|電話|代表|直通|携帯|ＦＡＸ)[\s:：.]*$", re.IGNORECASE,
-)
 
 
-def _bare_postal_context_ok(work: str, start: int, end: int) -> bool:
-    """記号無しの `NNN-NNNN` が電話番号の一部・市外局番なしの電話でないか（空白を挟んで見る）。"""
+def _bare_postal_context_ok(work: str, start: int, end: int, res: _PhoneRes) -> bool:
+    """記号無しの `NNN-NNNN` が電話番号の一部・市外局番なしの電話でないか（空白を挟んで見る）。
+
+    直前の見出しは、電話・FAX の見出しのうち 2 文字以上の語と、PHONE・ＦＡＸ（res.label_before）。
+    """
     before = work[:start].rstrip()
     if before and (before[-1] in ")-" or before[-1].isdigit()):
         return False
-    if _PHONE_LABEL_BEFORE_RE.search(before):
+    if res.label_before.search(before):
         return False
     after = work[end:].lstrip()
     if after and (after[0] in "-)" or after[0].isdigit()):
@@ -364,7 +436,7 @@ def _plus_postal_context_ok(work: str, end: int) -> bool:
 
 
 def _find_postal_hits(
-    work: str, changed: list[bool], taken: list[tuple[int, int]],
+    work: str, changed: list[bool], taken: list[tuple[int, int]], res: _PhoneRes,
 ) -> list[Hit]:
     hits: list[Hit] = []
     marked = list(_POSTAL_MARK_RE.finditer(work))
@@ -385,7 +457,7 @@ def _find_postal_hits(
 
     for m2 in _POSTAL_BARE_RE.finditer(work):
         span = m2.span()
-        if _overlaps(span, taken) or not _bare_postal_context_ok(work, span[0], span[1]):
+        if _overlaps(span, taken) or not _bare_postal_context_ok(work, span[0], span[1], res):
             continue
         digits = m2.group(1) + m2.group(2)
         hits.append(Hit(
@@ -451,15 +523,10 @@ def _group_span_and_digits(group: list[_Chunk]) -> tuple[int, int, str]:
 _DELIM_ONLY_RE = re.compile(r"^[\s/,、・]*$")
 _TRAIL_STRIP_CHARS = " \t\r\n\u3000.:：)]）"
 
-_TEL_ALT = "|".join(re.escape(w) for w in TEL_PREFIXES)
-_FAX_ALT = "|".join(re.escape(w) for w in FAX_PREFIXES)
-_COMBO_RE = re.compile(r"(" + _TEL_ALT + r")\s*[/・&､、,]\s*(" + _FAX_ALT + r")$", re.IGNORECASE)
-_SINGLE_RE = re.compile(r"(" + _TEL_ALT + r"|" + _FAX_ALT + r")$", re.IGNORECASE)
-_FAX_SET = frozenset(w.casefold() for w in FAX_PREFIXES)
 
 
-def _match_combo_prefix(trimmed: str) -> tuple[int, bool] | None:
-    m = _COMBO_RE.search(trimmed)
+def _match_combo_prefix(trimmed: str, res: _PhoneRes) -> tuple[int, bool] | None:
+    m = res.combo.search(trimmed)
     if m is None:
         return None
     tel_word = m.group(1)
@@ -470,8 +537,8 @@ def _match_combo_prefix(trimmed: str) -> tuple[int, bool] | None:
     return m.start(), tel_word.casefold() in _MOBILE_WORDS
 
 
-def _match_single_prefix(trimmed: str) -> tuple[int, HitKind, bool] | None:
-    m = _SINGLE_RE.search(trimmed)
+def _match_single_prefix(trimmed: str, res: _PhoneRes) -> tuple[int, HitKind, bool] | None:
+    m = res.single.search(trimmed)
     if m is None:
         return None
     word = m.group(1)
@@ -480,12 +547,12 @@ def _match_single_prefix(trimmed: str) -> tuple[int, HitKind, bool] | None:
         pos = m.start()
         if pos > 0 and not _is_prefix_boundary_char(trimmed[pos - 1]):
             return None
-    kind = HitKind.FAX if wf in _FAX_SET else HitKind.PHONE
+    kind = HitKind.FAX if wf in res.fax_words else HitKind.PHONE
     return m.start(), kind, wf in _MOBILE_WORDS
 
 
 def _resolve_phone_prefix(
-    gap: str, gap_start: int, last_hit: Hit | None,
+    gap: str, gap_start: int, last_hit: Hit | None, res: _PhoneRes,
 ) -> tuple[HitKind, bool, bool, int | None]:
     if _DELIM_ONLY_RE.fullmatch(gap) and last_hit is not None and last_hit.kind in (
         HitKind.PHONE, HitKind.FAX, HitKind.PHONE_FAX,
@@ -496,12 +563,12 @@ def _resolve_phone_prefix(
     if not trimmed:
         return HitKind.PHONE, False, False, None
 
-    combo = _match_combo_prefix(trimmed)
+    combo = _match_combo_prefix(trimmed, res)
     if combo is not None:
         label_start_rel, mobile = combo
         return HitKind.PHONE_FAX, True, mobile, gap_start + label_start_rel
 
-    single = _match_single_prefix(trimmed)
+    single = _match_single_prefix(trimmed, res)
     if single is not None:
         label_start_rel, kind, mobile = single
         return kind, True, mobile, gap_start + label_start_rel
@@ -531,7 +598,7 @@ def _last_hit_before(hits: list[Hit], pos: int) -> Hit | None:
 
 def _find_phone_fax_hits(
     work: str, norm: str, changed: list[bool], taken: list[tuple[int, int]],
-    postal_hits: list[Hit],
+    postal_hits: list[Hit], res: _PhoneRes,
 ) -> list[Hit]:
     # 郵便番号など、既に確定した範囲の数字に連なって候補が膨らまないよう空白で潰す。
     masked_work = _mask_ranges(work, list(taken))
@@ -549,7 +616,7 @@ def _find_phone_fax_hits(
             prev is not None and prev.kind in (HitKind.PHONE, HitKind.FAX, HitKind.PHONE_FAX)
         ) else None
         kind, prefixed, mobile_prefix, label_start = _resolve_phone_prefix(
-            gap, gap_start, prev_phone,
+            gap, gap_start, prev_phone, res,
         )
         min_d, max_d = (8, 13) if prefixed else (10, 11)
         if not (min_d <= len(digits) <= max_d):
@@ -647,16 +714,17 @@ def _find_url_hits(
     return hits
 
 
-def find_contacts(t: NormText) -> list[Hit]:
+def find_contacts(t: NormText, d: Dictionaries | None = None) -> list[Hit]:
     norm = t.norm
     work, changed = fix_ocr_digits(norm)
     compact, idx = compact_view(norm)
+    res = _phone(d)
 
     taken: list[tuple[int, int]] = []
     hits: list[Hit] = []
-    postal_hits = _find_postal_hits(work, changed, taken)
+    postal_hits = _find_postal_hits(work, changed, taken, res)
     hits.extend(postal_hits)
-    hits.extend(_find_phone_fax_hits(work, norm, changed, taken, postal_hits))
+    hits.extend(_find_phone_fax_hits(work, norm, changed, taken, postal_hits, res))
     hits.extend(_find_email_hits(norm, compact, idx, taken))
     hits.extend(_find_url_hits(norm, compact, idx, taken))
 

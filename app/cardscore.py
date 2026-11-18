@@ -71,7 +71,7 @@ def score(glyphs: Sequence[Glyph], s: Settings, d: Dictionaries) -> CardSignals:
     name_pieces: list[tuple[str, float]] = []   # (空白を除いた norm, 行の size)
 
     for line in lines:
-        hits = patterns.find_contacts(line.text)
+        hits = patterns.find_contacts(line.text, d)
         norm = line.text.norm
 
         for h in hits:

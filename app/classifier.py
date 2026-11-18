@@ -152,13 +152,13 @@ def _remaining_spans(length: int, consumed: list[tuple[int, int]]) -> list[tuple
     return spans
 
 
-def _make_piece(ln: TextLine, s: int, e: int) -> _Piece | None:
+def _make_piece(ln: TextLine, s: int, e: int, d: Dictionaries) -> _Piece | None:
     """両端の空白・区切りを落とし、ラベルだけ・記号だけ・1 文字の片は捨てる
     （§11.1-2）。patterns.is_label_only が同じ正規表現を公開している。"""
     ts, te = _trim_span(ln.text.norm, s, e)
     if ts >= te:
         return None
-    if patterns.is_label_only(ln.text.norm[ts:te]):
+    if patterns.is_label_only(ln.text.norm[ts:te], d):
         return None
     return _Piece([(ln, ts, te)])
 
@@ -169,16 +169,16 @@ def _make_piece(ln: TextLine, s: int, e: int) -> _Piece | None:
 
 
 def _collect_pieces_and_hits(
-    lines: list[TextLine],
+    lines: list[TextLine], d: Dictionaries,
 ) -> tuple[list[_Piece], dict[int, list[Hit]]]:
     pieces: list[_Piece] = []
     line_hits: dict[int, list[Hit]] = {}
     for ln in lines:
-        hits = patterns.find_contacts(ln.text)
+        hits = patterns.find_contacts(ln.text, d)
         line_hits[id(ln)] = hits
         consumed = sorted((h.start, h.end) for h in hits if h.kind != HitKind.POSTAL)
         for s, e in _remaining_spans(len(ln.text.norm), consumed):
-            piece = _make_piece(ln, s, e)
+            piece = _make_piece(ln, s, e, d)
             if piece is not None:
                 pieces.append(piece)
     return pieces, line_hits
@@ -222,7 +222,7 @@ def _is_postal_only(p: _Piece, line_hits: dict[int, list[Hit]]) -> bool:
     return not rest.strip(_TRIM_CHARS)
 
 
-def _postal_heading(p: _Piece, line_hits: dict[int, list[Hit]]) -> str | None:
+def _postal_heading(p: _Piece, line_hits: dict[int, list[Hit]], d: Dictionaries) -> str | None:
     """拠点ラベルと郵便番号だけの片（`本社 〒100-0001`）なら、その拠点ラベル（原文）。それ以外は None。
 
     郵便番号の後ろに何かある片（`〒100-0001 千代田区…`）は住所そのものなので、対象にしない。
@@ -236,7 +236,7 @@ def _postal_heading(p: _Piece, line_hits: dict[int, list[Hit]]) -> str | None:
     if ln.text.norm[hit.end:e].strip(_TRIM_CHARS):
         return None
     before = ln.text.norm[s:hit.start].strip(_TRIM_CHARS)
-    if not before or not patterns.is_branch_label(before):
+    if not before or not patterns.is_branch_label(before, d):
         return None
     return formatter.clean_spaces(ln.text.raw_slice(s, hit.start)).strip(_TRIM_CHARS)
 
@@ -250,7 +250,7 @@ def _plus_marked(p: _Piece, line_hits: dict[int, list[Hit]]) -> bool:
 
 
 def _address_start_below(
-    p: _Piece, pieces: list[_Piece], line_hits: dict[int, list[Hit]],
+    p: _Piece, pieces: list[_Piece], line_hits: dict[int, list[Hit]], d: Dictionaries,
 ) -> _Piece | None:
     """p のすぐ下の行にある、都道府県で始まり自分の郵便番号を持たない片（無ければ None）。
 
@@ -276,7 +276,7 @@ def _address_start_below(
         if gap != nearest:
             continue
         ln, s, e = c.parts[0]
-        if not _piece_has_postal(c, line_hits) and patterns.is_address_start(ln.text.norm[s:e], False):
+        if not _piece_has_postal(c, line_hits) and patterns.is_address_start(ln.text.norm[s:e], False, d):
             return c
     return None
 
@@ -405,7 +405,7 @@ def _extract_company(
         for ns, ne in ((s, gs), (ge, e)):
             if ns >= ne:
                 continue
-            new_piece = _make_piece(ln, ns, ne)
+            new_piece = _make_piece(ln, ns, ne, d)
             if new_piece is not None:
                 remaining.append(new_piece)
 
@@ -470,14 +470,14 @@ def _extract_title(
             gs, ge = s, s + te
             nts, nte = _trim_span(norm, rest_from, len(norm))
             if nts < nte:
-                new_piece = _make_piece(ln, s + nts, s + nte)
+                new_piece = _make_piece(ln, s + nts, s + nte, d)
                 if new_piece is not None:
                     remaining.append(new_piece)
         elif split_front:
             gs, ge = s + ts, e
             nts, nte = _trim_span(norm, 0, ts)
             if nts < nte:
-                new_piece = _make_piece(ln, s + nts, s + nte)
+                new_piece = _make_piece(ln, s + nts, s + nte, d)
                 if new_piece is not None:
                     remaining.append(new_piece)
         else:
@@ -559,7 +559,7 @@ def _extract_departments(
 # ---------------------------------------------------------------------------
 
 
-def _find_branch_label(start: _Piece, remaining: list[_Piece]) -> _Piece | None:
+def _find_branch_label(start: _Piece, remaining: list[_Piece], d: Dictionaries) -> _Piece | None:
     ln0 = start.parts[0][0]
     h = geometry.height(ln0.bbox)
     for p in remaining:
@@ -569,7 +569,7 @@ def _find_branch_label(start: _Piece, remaining: list[_Piece]) -> _Piece | None:
         if ln is ln0:
             continue
         norm = ln.text.norm[s:e]
-        if not patterns.is_branch_label(norm):
+        if not patterns.is_branch_label(norm, d):
             continue
         if ln.row == ln0.row and ln.col == ln0.col - 1:
             return p
@@ -585,6 +585,7 @@ def _find_continuation(
     remaining: list[_Piece],
     cfg: ClassifyCfg,
     line_hits: dict[int, list[Hit]],
+    d: Dictionaries,
 ) -> _Piece | None:
     ln0 = p.parts[0][0]
     h = geometry.height(ln0.bbox)
@@ -604,9 +605,9 @@ def _find_continuation(
         if abs(lnc.size - ln0.size) > cfg.address_size_tolerance * ln0.size:
             continue
         norm_c = lnc.text.norm[sc:ec]
-        if patterns.is_address_start(norm_c, _piece_has_postal(c, line_hits)):
+        if patterns.is_address_start(norm_c, _piece_has_postal(c, line_hits), d):
             continue
-        if patterns.is_branch_label(norm_c):
+        if patterns.is_branch_label(norm_c, d):
             continue
         if _line_starts_with_contact(line_hits.get(id(lnc), [])):
             continue
@@ -647,13 +648,13 @@ def _address_text_and_postal(
 _POSTAL_ATTACH_GAP_RATIO = 1.5
 
 
-def _split_mid_address(p: _Piece) -> list[_Piece]:
+def _split_mid_address(p: _Piece, d: Dictionaries) -> list[_Piece]:
     """行の途中に 2 件目の住所（拠点ラベル＋都道府県）があれば片を分ける（§11.5-1）。"""
     ln, s, e = p.parts[0]
     out: list[_Piece] = []
     cur = s
     while True:
-        k = patterns.find_mid_address_start(ln.text.norm, cur, e)
+        k = patterns.find_mid_address_start(ln.text.norm, cur, e, d)
         if k is None:
             break
         out.append(_Piece([(ln, cur, k)]))
@@ -699,7 +700,7 @@ def _find_adjacent_postal(
 
 
 def _postal_pieces(
-    pieces: list[_Piece], line_hits: dict[int, list[Hit]],
+    pieces: list[_Piece], line_hits: dict[int, list[Hit]], d: Dictionaries,
 ) -> tuple[set[int], dict[int, str], set[int]]:
     """住所の開始にせず、隣の住所に付ける「郵便番号の片」を決める。
 
@@ -720,16 +721,16 @@ def _postal_pieces(
         if _is_postal_only(p, line_hits):
             if not _plus_marked(p, line_hits):
                 ids.add(id(p))
-            elif _address_start_below(p, pieces, line_hits) is not None:
+            elif _address_start_below(p, pieces, line_hits, d) is not None:
                 ids.add(id(p))
                 downward.add(id(p))
             continue
-        label = _postal_heading(p, line_hits)
+        label = _postal_heading(p, line_hits, d)
         if not label:
             continue
-        below = _address_start_below(p, pieces, line_hits)
+        below = _address_start_below(p, pieces, line_hits, d)
         # 下の住所が自分の拠点ラベルで始まっている時（`大阪支店 大阪府…`）は、その住所の見出しではない
-        if below is not None and not _starts_with_branch_label(below):
+        if below is not None and not _starts_with_branch_label(below, d):
             ids.add(id(p))
             headings[id(p)] = label
             downward.add(id(p))
@@ -784,17 +785,17 @@ def _undecided_plus_pieces(
     return out
 
 
-def _starts_with_branch_label(p: _Piece) -> bool:
+def _starts_with_branch_label(p: _Piece, d: Dictionaries) -> bool:
     ln, s, e = p.parts[0]
     words = ln.text.norm[s:e].split()
-    return bool(words) and patterns.is_branch_label(words[0])
+    return bool(words) and patterns.is_branch_label(words[0], d)
 
 
 def _extract_addresses(
-    pieces: list[_Piece], cfg: ClassifyCfg, line_hits: dict[int, list[Hit]],
+    pieces: list[_Piece], cfg: ClassifyCfg, line_hits: dict[int, list[Hit]], d: Dictionaries,
 ) -> tuple[list[_Piece], list[str], list[str]]:
     remaining = list(pieces)
-    postal_ids, headings, downward = _postal_pieces(pieces, line_hits)
+    postal_ids, headings, downward = _postal_pieces(pieces, line_hits, d)
     # (住所の片, 住所の最初の行の片, 拠点ラベルが頭に付いているか)
     chains: list[tuple[list[_Piece], _Piece, bool]] = []
 
@@ -807,28 +808,28 @@ def _extract_addresses(
                 continue
             ln, s, e = p.parts[0]
             norm = ln.text.norm[s:e]
-            if patterns.is_address_start(norm, _piece_has_postal(p, line_hits)):
+            if patterns.is_address_start(norm, _piece_has_postal(p, line_hits), d):
                 start = p
                 break
         if start is None:
             break
         remaining.remove(start)
 
-        for part in _split_mid_address(start):
+        for part in _split_mid_address(start, d):
             chain_lines = [part]
             while len(chain_lines) < cfg.address_max_lines:
-                nxt = _find_continuation(chain_lines[-1], remaining, cfg, line_hits)
+                nxt = _find_continuation(chain_lines[-1], remaining, cfg, line_hits, d)
                 if nxt is None:
                     break
                 remaining.remove(nxt)
                 chain_lines.append(nxt)
 
-            label_piece = _find_branch_label(part, remaining)
+            label_piece = _find_branch_label(part, remaining, d)
             if label_piece is not None:
                 remaining.remove(label_piece)
                 chains.append(([label_piece, *chain_lines], part, True))
             else:
-                chains.append((chain_lines, part, _starts_with_branch_label(part)))
+                chains.append((chain_lines, part, _starts_with_branch_label(part, d)))
 
     undecided = _undecided_plus_pieces(chains, remaining, postal_ids, downward, headings, line_hits)
     addresses: list[str] = []
@@ -849,7 +850,7 @@ def _extract_addresses(
                 elif above and not has_label:
                     # 拠点ラベル／郵便番号／住所 と 3 行に分かれた形。郵便番号の行の上（か左）の
                     # 拠点ラベルの片を住所の頭に付ける（未分類に落とさない）
-                    heading = _find_branch_label(po, remaining)
+                    heading = _find_branch_label(po, remaining, d)
                     if heading is not None:
                         remaining.remove(heading)
                         address = formatter.clean_spaces(f"{_piece_raw(heading)} {address}")
@@ -1001,7 +1002,7 @@ def _split_ascii_edges_for_names(
         if hi < len(tokens):
             spans.append((tokens[hi][0], tokens[-1][1]))
         for a, b in spans:
-            piece = _make_piece(ln, a, b)
+            piece = _make_piece(ln, a, b, d)
             if piece is not None:
                 out.append(piece)
     return out
@@ -1100,7 +1101,7 @@ def classify(region: Region, s: Settings, d: Dictionaries) -> CardFields:
     if any("�" in ln.text.raw for ln in lines):
         reasons.add(Reason.UNREADABLE_CHARS)
 
-    pieces, line_hits = _collect_pieces_and_hits(lines)
+    pieces, line_hits = _collect_pieces_and_hits(lines, d)
 
     phone_fax_items = _collect_phone_fax_hits(lines, line_hits)
     kinds, guessed = _resolve_phone_fax_kinds(phone_fax_items)
@@ -1121,7 +1122,7 @@ def classify(region: Region, s: Settings, d: Dictionaries) -> CardFields:
     pieces, title, title_lines, dept_parts = _extract_title(pieces, s.classify, d)
     fields.title = title
 
-    pieces, addresses, postals = _extract_addresses(pieces, s.classify, line_hits)
+    pieces, addresses, postals = _extract_addresses(pieces, s.classify, line_hits, d)
     fields.addresses = addresses
     fields.postals = postals
 

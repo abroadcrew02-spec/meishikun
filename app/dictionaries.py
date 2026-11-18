@@ -1,16 +1,55 @@
 """辞書ファイル（dict\\）の読み込みと検証。DESIGN.md §18.2・§19.1。
 
-5 本すべて UTF-8（BOM 可）。`#` で始まる行と空行は無視する。
-titles / corp_suffixes / dept_suffixes は old_kanji で先に読んだ対応表を使って
-`textnorm.normalize(...).norm` で正規化し、長い順に並べて保持する（辞書は
-実行ごとに読み直す。I16）。
+すべて UTF-8（BOM 可）。`#` で始まる行と空行は無視する。
+語の辞書は old_kanji で先に読んだ対応表を使って `textnorm.normalize(...).norm` で正規化し、
+長い順に並べて保持する（辞書は実行ごとに読み直す。I16）。
+
+辞書の種類（ファイル名・形式・必須か・既定の語）は KINDS の 1 か所だけに書く。
+辞書を読む入口は load_dictionaries の 1 つだけにする（全自動・確認画面・辞書の画面の保存前の検査・
+試し読みが、同じ読み方を通る）。
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
-from app.models import Dictionaries
+from app.models import BRANCH_LABELS, FAX_PREFIXES, ORG_SUFFIXES, TEL_PREFIXES, Dictionaries
 from app.textnorm import normalize
+
+FORM_WORDS = "words"            # 1 行 1 語
+FORM_OLD_KANJI = "old_kanji"    # old,new の CSV
+FORM_AREA_CODES = "area_codes"  # area_code,note の CSV
+
+
+@dataclass(frozen=True)
+class DictKind:
+    """辞書の種類 1 つ。"""
+    key: str                                # 識別子（Dictionaries の項目名と同じ）
+    filename: str
+    form: str
+    required: bool = False                  # 語が 1 つも無いとエラーにする
+    default: tuple[str, ...] | None = None  # ファイルが無い・語が無い時に使う既定の語（無ければ None）
+
+
+KINDS: tuple[DictKind, ...] = (
+    DictKind("old_kanji", "old_kanji.csv", FORM_OLD_KANJI),
+    DictKind("titles", "titles.txt", FORM_WORDS, required=True),
+    DictKind("corp_suffixes", "corp_suffixes.txt", FORM_WORDS, required=True),
+    DictKind("dept_suffixes", "dept_suffixes.txt", FORM_WORDS),
+    DictKind("branch_labels", "branch_labels.txt", FORM_WORDS, default=BRANCH_LABELS),
+    DictKind("org_suffixes", "org_suffixes.txt", FORM_WORDS, default=ORG_SUFFIXES),
+    DictKind("tel_prefixes", "tel_prefixes.txt", FORM_WORDS, default=TEL_PREFIXES),
+    DictKind("fax_prefixes", "fax_prefixes.txt", FORM_WORDS, default=FAX_PREFIXES),
+    DictKind("area_codes", "area_codes.csv", FORM_AREA_CODES),
+)
+
+
+def kind_of(key: str) -> DictKind:
+    for kind in KINDS:
+        if kind.key == key:
+            return kind
+    raise KeyError(key)
 
 
 class DictionaryError(Exception):
@@ -22,19 +61,24 @@ def _error(path: Path, line_no: int | None, message: str) -> DictionaryError:
     return DictionaryError(f"{where}: {message}")
 
 
-def _read_data_lines(path: Path) -> list[tuple[int, str]]:
-    """`#` 始まりの行・空行を除いた (行番号, 内容) のリスト。行番号は 1 始まり。"""
+def _read_text(path: Path, *, optional: bool) -> str | None:
+    """辞書ファイルの中身。optional が真で、ファイルが無い時は None。"""
     try:
-        text = path.read_text(encoding="utf-8-sig")
+        return path.read_text(encoding="utf-8-sig")
     except FileNotFoundError as exc:
+        if optional:
+            return None
         raise _error(path, None, "ファイルが見つかりません") from exc
     except OSError as exc:
         raise _error(path, None, f"読み込みに失敗しました: {exc}") from exc
     except UnicodeDecodeError as exc:
         raise _error(path, None, f"UTF-8 として読めません: {exc}") from exc
 
+
+def _data_lines(text: str | None) -> list[tuple[int, str]]:
+    """`#` 始まりの行・空行を除いた (行番号, 内容) のリスト。行番号は 1 始まり。"""
     out: list[tuple[int, str]] = []
-    for i, raw_line in enumerate(text.splitlines(), start=1):
+    for i, raw_line in enumerate((text or "").splitlines(), start=1):
         line = raw_line.strip()
         if not line or line.startswith("#"):
             continue
@@ -42,17 +86,28 @@ def _read_data_lines(path: Path) -> list[tuple[int, str]]:
     return out
 
 
-def _load_word_list(path: Path, old_kanji: dict[str, str], *, required: bool) -> tuple[str, ...]:
-    lines = _read_data_lines(path)
-    if required and not lines:
-        raise _error(path, None, "1 行以上の語が必要です")
-    words = [normalize(content, old_kanji).norm for _, content in lines]
+def _sorted_words(words: list[str]) -> tuple[str, ...]:
     words.sort(key=len, reverse=True)
     return tuple(words)
 
 
-def _load_old_kanji(path: Path) -> dict[str, str]:
-    lines = _read_data_lines(path)
+def _parse_words(
+    path: Path, text: str | None, old_kanji: dict[str, str], kind: DictKind,
+) -> tuple[str, ...]:
+    # 正規化すると空になる語は入れない（空の語は、どんな文字列にも一致してしまう）
+    words = [normalize(content, old_kanji).norm for _, content in _data_lines(text)]
+    words = [w for w in words if w.strip()]
+    if not words:
+        if kind.required:
+            raise _error(path, None, "1 行以上の語が必要です")
+        if kind.default is not None:
+            # 既定の語にも、ファイルの語と同じ正規化と並べ替えを当てる
+            words = [normalize(w, old_kanji).norm for w in kind.default]
+    return _sorted_words(words)
+
+
+def _parse_old_kanji(path: Path, text: str | None) -> dict[str, str]:
+    lines = _data_lines(text)
     if not lines:
         return {}
     header_no, header = lines[0]
@@ -72,8 +127,8 @@ def _load_old_kanji(path: Path) -> dict[str, str]:
     return mapping
 
 
-def _load_area_codes(path: Path) -> frozenset[str]:
-    lines = _read_data_lines(path)
+def _parse_area_codes(path: Path, text: str | None) -> frozenset[str]:
+    lines = _data_lines(text)
     if not lines:
         return frozenset()
     header_no, header = lines[0]
@@ -91,16 +146,26 @@ def _load_area_codes(path: Path) -> frozenset[str]:
     return frozenset(codes)
 
 
-def load_dictionaries(dict_dir: Path) -> Dictionaries:
-    old_kanji = _load_old_kanji(dict_dir / "old_kanji.csv")
-    titles = _load_word_list(dict_dir / "titles.txt", old_kanji, required=True)
-    corp_suffixes = _load_word_list(dict_dir / "corp_suffixes.txt", old_kanji, required=True)
-    dept_suffixes = _load_word_list(dict_dir / "dept_suffixes.txt", old_kanji, required=False)
-    area_codes = _load_area_codes(dict_dir / "area_codes.csv")
-    return Dictionaries(
-        titles=titles,
-        corp_suffixes=corp_suffixes,
-        dept_suffixes=dept_suffixes,
-        area_codes=area_codes,
-        old_kanji=old_kanji,
-    )
+def load_dictionaries(dict_dir: Path, replace: Mapping[str, str] | None = None) -> Dictionaries:
+    """dict_dir の辞書を読む。
+
+    replace は「ファイル名 → 中身」。渡したファイルだけ、ディスクの代わりにその中身で読む
+    （保存の前に、書き換えた後の辞書の一式を検査する・試し読みで変更後の辞書を作る、のに使う）。
+    既定の語を持つ種類（KINDS の default）は、ファイルが無い・語が無い時に既定の語で動く。
+    """
+    def text_of(kind: DictKind) -> tuple[Path, str | None]:
+        path = dict_dir / kind.filename
+        if replace is not None and kind.filename in replace:
+            return path, replace[kind.filename]
+        return path, _read_text(path, optional=kind.default is not None)
+
+    values: dict[str, object] = {}
+    old_kanji = _parse_old_kanji(*text_of(kind_of("old_kanji")))
+    values["old_kanji"] = old_kanji
+    for kind in KINDS:
+        if kind.form == FORM_WORDS:
+            path, text = text_of(kind)
+            values[kind.key] = _parse_words(path, text, old_kanji, kind)
+        elif kind.form == FORM_AREA_CODES:
+            values[kind.key] = _parse_area_codes(*text_of(kind))
+    return Dictionaries(**values)

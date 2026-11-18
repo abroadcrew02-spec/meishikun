@@ -386,6 +386,29 @@ class Settings:
     classify: ClassifyCfg
 
 
+# ---- 辞書ファイルが無い・空の時に使う既定の語（§18.2）。配布する dict\\ の 4 本の中身は、これと同じ ----
+
+# 拠点の語（§10.8）。住所の前に付く拠点の名前
+BRANCH_LABELS: tuple[str, ...] = (
+    "本社", "本店", "支社", "支店", "営業所", "事業所", "工場", "研究所", "センター", "オフィス",
+)
+
+# 法人格の無い組織名（`見本銀行` `見本工業` `見本不動産協会`）を氏名らしい語にしないための語尾
+# （§10.7・2026-10-06・Q50）。人名がこれらで終わることはまず無い。
+ORG_SUFFIXES: tuple[str, ...] = (
+    "銀行", "信用金庫", "信用組合", "証券", "保険", "大学", "高校", "学校", "学園", "病院", "医院",
+    "協会", "組合", "連合会", "財団", "法人", "事務所", "商店", "商会", "商事", "物産", "工業", "産業",
+    "興業", "鉱業", "製作所", "研究所", "電機", "電器", "電気", "不動産", "建設", "運輸", "通信",
+    "出版", "印刷", "書店", "薬局", "ホールディングス", "グループ", "センター", "サービス",
+    "システム", "システムズ", "エンジニアリング", "コーポレーション", "カンパニー", "ネットワーク",
+    "テクノロジー", "テクノロジーズ", "ソリューション", "ソリューションズ", "クリニック",
+)
+
+# 電話・FAX の見出し（§10.2）
+TEL_PREFIXES: tuple[str, ...] = ("TEL", "T", "電話", "代表", "直通", "携帯", "MOBILE")
+FAX_PREFIXES: tuple[str, ...] = ("FAX", "F")
+
+
 @dataclass(frozen=True, slots=True)
 class Dictionaries:
     titles: tuple[str, ...]          # 判定用正規化済み。長い順
@@ -393,3 +416,8 @@ class Dictionaries:
     dept_suffixes: tuple[str, ...]   # 判定用正規化済み。長い順
     area_codes: frozenset[str]       # 先頭 0 を含む 2〜5 桁の数字列
     old_kanji: dict[str, str]        # 1 文字 → 1 文字
+    # ここから下は、辞書ファイルが無い・空の時は既定の語（上の定数）で動く
+    branch_labels: tuple[str, ...] = BRANCH_LABELS   # 拠点の語
+    org_suffixes: tuple[str, ...] = ORG_SUFFIXES     # 組織名の語尾
+    tel_prefixes: tuple[str, ...] = TEL_PREFIXES     # 電話の見出し
+    fax_prefixes: tuple[str, ...] = FAX_PREFIXES     # FAX の見出し
