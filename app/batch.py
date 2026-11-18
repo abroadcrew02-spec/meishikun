@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import shutil
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -71,7 +72,16 @@ def _process_one(
     pdf: Path, s: "Settings", d: "Dictionaries", extractor: Extractor, logger: logging.Logger,
 ) -> FileOutcome:
     """1 本の PDF を抽出し、output\\<stem>\\ に一覧表と分割確認 PDF を書いてから移動する。"""
-    result = extractor(pdf, s, d)
+    return write_and_move(pdf, extractor(pdf, s, d), s, logger)
+
+
+def write_and_move(
+    pdf: Path, result: "PdfResult", s: "Settings", logger: logging.Logger,
+) -> FileOutcome:
+    """抽出結果を output\\<stem>\\ に書き、入力を done\\ / error\\ へ移動する（I7・I8）。
+
+    全自動（run）と確認画面（review）の両方がここを通る。
+    """
     outcome = FileOutcome(result=result)
 
     rows_data = [to_row(card, s.output) for card in result.cards]
@@ -116,6 +126,53 @@ def _process_one(
     return outcome
 
 
+@dataclass(slots=True)
+class RunContext:
+    """1 回の実行で共有するもの（run_id・ログ・対象の PDF）。I11: 出力は同じ run_id を使う。"""
+    run_id: str
+    log_path: Path
+    logger: logging.Logger
+    pdfs: list[Path]
+    ignored: list[str]
+
+
+def fatal_summary() -> BatchSummary:
+    """フォルダを作れず、起動できなかった時の要約（終了コード 2）。"""
+    return BatchSummary(
+        run_id="", outcomes=[], ignored_files=[], rows=0, review_rows=0, fatal=True,
+    )
+
+
+def begin_run(s: "Settings", now: Callable[[], datetime] = datetime.now) -> RunContext | None:
+    """フォルダを作り、run_id とログを用意して、input\\ の PDF を数える。作れなければ None。"""
+    try:
+        fileops.ensure_dirs(s.paths)
+    except OSError:
+        return None
+
+    run_id = fileops.make_run_id(now(), s.paths.output, s.paths.logs)
+    log_path = s.paths.logs / f"meishi_{run_id}.log"
+    logger = runlog.setup_run_logger(log_path)
+
+    pdfs, ignored = fileops.list_input_pdfs(s.paths.input)
+    logger.info(f"START run_id={run_id} files={len(pdfs)} ignored={len(ignored)}")
+    return RunContext(run_id=run_id, log_path=log_path, logger=logger, pdfs=pdfs, ignored=ignored)
+
+
+def end_run(ctx: RunContext, outcomes: list[FileOutcome]) -> BatchSummary:
+    """ファイルごとの結果をログに書き、要約を作る。"""
+    for outcome in outcomes:
+        runlog.log_file_outcome(ctx.logger, outcome)
+
+    summary = BatchSummary(
+        run_id=ctx.run_id, outcomes=outcomes, ignored_files=ctx.ignored,
+        rows=sum(o.rows for o in outcomes), review_rows=sum(o.review_rows for o in outcomes),
+        log_path=ctx.log_path,
+    )
+    ctx.logger.info(f"END exit_code={summary.exit_code()}")
+    return summary
+
+
 def run_batch(
     s: "Settings",
     d: "Dictionaries",
@@ -128,29 +185,8 @@ def run_batch(
     書いてから、入力を done\\ / error\\ へ移動する。1 ファイルの失敗は他の
     ファイルの処理を止めない。一覧表を書けなかった PDF は移動しない（I7）。
     """
-    try:
-        fileops.ensure_dirs(s.paths)
-    except OSError:
-        return BatchSummary(
-            run_id="", outcomes=[], ignored_files=[], rows=0, review_rows=0, fatal=True,
-        )
-
-    run_id = fileops.make_run_id(now(), s.paths.output, s.paths.logs)
-    log_path = s.paths.logs / f"meishi_{run_id}.log"
-    logger = runlog.setup_run_logger(log_path)
-
-    pdfs, ignored = fileops.list_input_pdfs(s.paths.input)
-    logger.info(f"START run_id={run_id} files={len(pdfs)} ignored={len(ignored)}")
-
-    outcomes: list[FileOutcome] = [_process_one(pdf, s, d, extractor, logger) for pdf in pdfs]
-
-    for outcome in outcomes:
-        runlog.log_file_outcome(logger, outcome)
-
-    summary = BatchSummary(
-        run_id=run_id, outcomes=outcomes, ignored_files=ignored,
-        rows=sum(o.rows for o in outcomes), review_rows=sum(o.review_rows for o in outcomes),
-        log_path=log_path,
-    )
-    logger.info(f"END exit_code={summary.exit_code()}")
-    return summary
+    ctx = begin_run(s, now)
+    if ctx is None:
+        return fatal_summary()
+    outcomes = [_process_one(pdf, s, d, extractor, ctx.logger) for pdf in ctx.pdfs]
+    return end_run(ctx, outcomes)

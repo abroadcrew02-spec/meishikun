@@ -15,7 +15,10 @@ if not defined PYCMD (
   set "RC=2"
   goto :end
 )
-%PYCMD% -X utf8 -m app run %*
+rem MEISHI_NOPAUSE is set by tests and unattended runs: skip the review screen.
+set "MODE=review"
+if defined MEISHI_NOPAUSE set "MODE=run"
+%PYCMD% -X utf8 -m app %MODE% %*
 set "RC=%ERRORLEVEL%"
 :end
 popd

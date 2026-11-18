@@ -49,6 +49,9 @@ def log_file_outcome(logger: logging.Logger, o: "FileOutcome") -> None:
     要確認理由コードの件数・移動先パスだけ（抽出値そのものは書かない）。
     """
     r = o.result
+    if o.input_changed:
+        logger.info(f"FILE name={r.file_name} status=input_changed")
+        return
     parts = [f"name={r.file_name}", f"status={r.status}", f"pages={r.page_count}"]
 
     if r.status == "error":

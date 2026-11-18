@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>名刺の枠の確認</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a id="skip" class="skip" href="#sheet-area">ページの画像と枠へ移動</a>
+<p id="announce" class="sr" role="status"></p>
+<p id="frame-help" hidden>矢印キーで動かします。Shift を押しながらだと大きく動きます。Ctrl と矢印キーで右と下の辺を動かします。Delete キーで削除します。</p>
+
+<div id="app" class="app">
+  <header class="bar">
+    <h1>名刺の枠の確認</h1>
+    <p id="where" class="where"></p>
+    <div class="history">
+      <button type="button" id="undo" disabled>元に戻す</button>
+      <button type="button" id="redo" disabled>やり直す</button>
+    </div>
+  </header>
+
+  <div id="notice" class="notice" role="alert" hidden>
+    <p id="notice-text"></p>
+    <button type="button" id="notice-retry">もう一度つなぐ</button>
+  </div>
+
+  <main class="work">
+    <nav class="pages" aria-labelledby="pages-title">
+      <h2 id="pages-title">ページの一覧</h2>
+      <ol id="page-list" class="page-list"></ol>
+    </nav>
+
+    <section class="desk" aria-labelledby="desk-title">
+      <h2 id="desk-title" class="sr">ページの画像と枠</h2>
+      <div class="tools">
+        <div class="tool-group">
+          <button type="button" id="prev-page">前のページ</button>
+          <button type="button" id="next-page">次のページ</button>
+          <button type="button" id="next-warn">次の要確認へ</button>
+        </div>
+        <div class="tool-group">
+          <button type="button" id="zoom-out" aria-label="縮小">−</button>
+          <span id="zoom-value" class="zoom-value">100%</span>
+          <button type="button" id="zoom-in" aria-label="拡大">＋</button>
+          <button type="button" id="zoom-page">全体を表示</button>
+          <button type="button" id="zoom-width">幅に合わせる</button>
+        </div>
+      </div>
+      <div id="sheet-area" class="sheet-area" tabindex="0" role="group" aria-label="ページの画像。枠は Tab キーで選べます">
+        <div id="sheet" class="sheet">
+          <div id="page-img" class="page-img" role="img" aria-label=""></div>
+          <div id="marks" class="marks" aria-hidden="true"></div>
+          <div id="frames" class="frames"></div>
+          <div id="draw-layer" class="draw-layer" hidden><div id="rubber" class="rubber" hidden></div></div>
+          <p id="sheet-msg" class="sheet-msg" role="status" hidden></p>
+        </div>
+      </div>
+      <p id="draw-hint" class="draw-hint" hidden>名刺をドラッグして囲みます。Enter キーで標準の大きさの枠を置きます。Esc キーでやめます。</p>
+    </section>
+
+    <aside class="panel" aria-labelledby="panel-title">
+      <h2 id="panel-title">このページの枠</h2>
+      <p id="page-summary" class="page-summary"></p>
+      <div class="actions">
+        <button type="button" id="add-frame" aria-pressed="false">枠を追加</button>
+        <button type="button" id="split-lr" disabled>左右に分ける</button>
+        <button type="button" id="split-tb" disabled>上下に分ける</button>
+        <button type="button" id="delete-frame" disabled>この枠を削除</button>
+        <button type="button" id="reset-page" disabled>自動の枠に戻す</button>
+      </div>
+      <ol id="frame-list" class="frame-list" tabindex="-1"></ol>
+      <details class="help">
+        <summary>キーボードでの操作</summary>
+        <dl>
+          <dt>Tab</dt><dd>次の枠へ移る</dd>
+          <dt>矢印</dt><dd>枠を動かす（Shift で大きく）</dd>
+          <dt>Ctrl＋矢印</dt><dd>枠の右と下の辺を動かす</dd>
+          <dt>Delete</dt><dd>枠を削除</dd>
+          <dt>N</dt><dd>枠を追加（ページの画像を選んでいる時）</dd>
+          <dt>Ctrl＋Z ／ Ctrl＋Y</dt><dd>元に戻す ／ やり直す</dd>
+        </dl>
+      </details>
+      <div class="legend" aria-hidden="true">
+        <p><span class="swatch swatch-ok"></span>名刺 1 枚として読む範囲</p>
+        <p><span class="swatch swatch-warn">!</span>確認してほしい枠</p>
+        <p><span class="swatch swatch-out"></span>どの枠にも入っていない文字</p>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="finish">
+    <p id="totals" class="totals" aria-live="polite"></p>
+    <p id="save-state" class="save-state" role="status"></p>
+    <button type="button" id="cancel">中止する</button>
+    <button type="button" id="finish" class="primary">出力する</button>
+  </footer>
+  <div id="busy" class="busy" hidden><p id="busy-text" tabindex="-1"></p></div>
+</div>
+
+<dialog id="confirm" class="dialog" aria-labelledby="confirm-title" aria-describedby="confirm-text confirm-warnings">
+  <h2 id="confirm-title">この枠で出力します</h2>
+  <p id="confirm-text"></p>
+  <ul id="confirm-warnings" class="warnings"></ul>
+  <div class="dialog-actions">
+    <button type="button" id="confirm-back">戻って確認する</button>
+    <button type="button" id="confirm-ok" class="primary">出力する</button>
+  </div>
+</dialog>
+
+<dialog id="cancel-confirm" class="dialog" aria-labelledby="cancel-title">
+  <h2 id="cancel-title">中止しますか</h2>
+  <p>ここまでの枠の修正は残りません。一覧表は作らず、PDF は input フォルダに残ります。</p>
+  <div class="dialog-actions">
+    <button type="button" id="cancel-back">作業に戻る</button>
+    <button type="button" id="cancel-ok" class="danger">中止する</button>
+  </div>
+</dialog>
+
+<section id="done" class="done" hidden aria-labelledby="done-title" tabindex="-1">
+  <h1 id="done-title"></h1>
+  <p id="done-lead"></p>
+  <table id="done-table" class="done-table" hidden>
+    <thead><tr><th scope="col">PDF</th><th scope="col">結果</th><th scope="col">名刺</th><th scope="col">要確認</th><th scope="col">結果の置き場所</th></tr></thead>
+    <tbody id="done-rows"></tbody>
+  </table>
+  <p id="done-foot" class="done-foot"></p>
+</section>
+
+<script src="app.js"></script>
+</body>
+</html>

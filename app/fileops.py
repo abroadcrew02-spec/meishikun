@@ -10,7 +10,7 @@ import os
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, BinaryIO
 
 if TYPE_CHECKING:
     from app.models import PathsCfg
@@ -133,3 +133,32 @@ def list_input_pdfs(input_dir: Path) -> tuple[list[Path], list[str]]:
         else:
             ignored.append(p.name)
     return pdfs, ignored
+
+
+_LOCK_NAME = "meishi.lock"
+
+
+def acquire_run_lock(logs_dir: Path) -> BinaryIO | None:
+    """logs_dir\\meishi.lock を排他で開く。取れなければ None（呼び出し元は実行しない）。
+
+    None になるのは、別の実行が持っている時と、ロックのファイルを開けない時（読み取り専用・
+    他のソフトが掴んでいる など）。開けないまま先へ進むと二重に出力しうるので、同じ扱いにする。
+    戻り値のファイルを閉じると解放される。プロセスが異常終了しても OS が解放するので、
+    ロックの残骸で起動できなくなることはない。フォルダを作れない時だけ OSError。
+    """
+    logs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        handle = open(logs_dir / _LOCK_NAME, "a+b")  # noqa: SIM115 - 呼び出し元が実行の終わりに閉じる
+    except OSError:
+        return None
+    try:
+        import msvcrt
+    except ImportError:  # pragma: no cover - Windows 以外では排他しない
+        return handle
+    try:
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+    except OSError:
+        handle.close()
+        return None
+    return handle

@@ -94,3 +94,23 @@ def group_rows(rects: Sequence[Rect4], overlap_min: float) -> list[list[int]]:
     for row in rows:
         row.sort(key=lambda i: rects[i][0])
     return rows
+
+
+def frame_rect(method: str, rect: Rect4, text_rect: Rect4 | None, margin: float) -> Rect4:
+    """名刺 1 枚の枠として見せる矩形（表示空間）。split_pdf._frame_rect と同じ規則（§14.4）。
+
+    画像の縁から取った枠・型を当てはめた枠・利用者が決めた枠は、領域の矩形そのもの。
+    それ以外は、文字の範囲に margin を足して領域の矩形で切ったもの（切った結果が空なら
+    切る前のもの）。文字が無ければ領域の矩形。
+    """
+    if method in ("detected", "fitted", "manual") or text_rect is None:
+        return rect
+    framed = (
+        text_rect[0] - margin, text_rect[1] - margin,
+        text_rect[2] + margin, text_rect[3] + margin,
+    )
+    x0, y0 = max(framed[0], rect[0]), max(framed[1], rect[1])
+    x1, y1 = min(framed[2], rect[2]), min(framed[3], rect[3])
+    if x1 > x0 and y1 > y0:
+        return (x0, y0, x1, y1)
+    return framed

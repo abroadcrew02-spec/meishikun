@@ -54,8 +54,9 @@ def _frame_rect(card) -> fitz.Rect:
     名刺を横切る線や空白だけの大きな枠になって読みにくい。文字の範囲が無い時だけ
     セルを使う。
     """
-    # 画像の縁から取った枠・型を当てはめた枠（§7.8・7.9）は名刺の外形そのものなので、そのまま描く
-    if str(getattr(card, "method", "")) in ("detected", "fitted"):
+    # 画像の縁から取った枠・型を当てはめた枠（§7.8・7.9）と、利用者が確認画面で決めた枠は
+    # 名刺の外形そのものなので、そのまま描く
+    if str(getattr(card, "method", "")) in ("detected", "fitted", "manual"):
         return fitz.Rect(card.draw_rect)
     if getattr(card, "draw_text_rect", None) is None:
         return fitz.Rect(card.draw_rect)

@@ -1,7 +1,8 @@
 """CLI エントリポイント。
 
-DESIGN.md §4.1・§17・§19.2 を実装する。`python -m app run` と
-`python -m app diagnose [--no-split]` を提供する。重い依存（app.config・
+DESIGN.md §4.1・§17・§19.2 を実装する。`python -m app review`（枠を画面で確認してから
+出力）・`python -m app run`（確認なしで出力）・`python -m app diagnose [--no-split]`・
+`python -m app clear` を提供する。重い依存（app.config・
 app.dictionaries・app.batch・app.diagnose）は実際にコマンドを実行する時
 だけ import する（引数パースだけなら依存が揃っていなくても動く）。
 """
@@ -21,6 +22,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base", type=Path, default=None, help=argparse.SUPPRESS)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("run", parents=[common])
+    review = sub.add_parser("review", parents=[common])
+    review.add_argument("--no-browser", action="store_true", help="ブラウザを開かず、アドレスだけ表示する")
     diag = sub.add_parser("diagnose", parents=[common])
     diag.add_argument("--no-split", action="store_true", help="分割結果を出さない")
     clear = sub.add_parser("clear", parents=[common])
@@ -65,8 +68,49 @@ def _run_clear(base: Path, yes: bool) -> int:
     return 0
 
 
+def _run_locked(ns: argparse.Namespace, settings, dicts) -> int:
+    """run / review を、同じフォルダで同時に 1 つだけ動かす。
+
+    確認画面を開いている間に別の実行が同じ PDF を処理すると、一覧表が二重にできたり、
+    入力が先に移動されたりするため。
+    """
+    from app import fileops
+
+    lock = None
+    try:
+        lock = fileops.acquire_run_lock(settings.paths.logs)
+        locked_out = lock is None
+    except OSError:
+        locked_out = False   # logs フォルダを作れない。この後の処理が「起動できない」として報告する
+    if locked_out:
+        print(
+            "別の実行（確認画面を開いたままの実行を含む）が動いているか、logs フォルダの meishi.lock を"
+            "開けません。前の黒い画面が残っていないか確かめてから、もう一度実行してください。"
+        )
+        return 2
+    try:
+        if ns.command == "review":
+            from app.review import run_review
+
+            try:
+                return run_review(settings, dicts, open_browser=not ns.no_browser)
+            except Exception as exc:  # noqa: BLE001 - 例外の中身（名刺の文字を含みうる）を表示しない（I9）
+                print(f"確認画面を続けられませんでした（{type(exc).__name__}）。何も出力していない PDF は input フォルダに残っています。")
+                return 1
+
+        from app.batch import run_batch
+        from app.summary import format_summary
+
+        summary = run_batch(settings, dicts)
+        print(format_summary(summary))
+        return summary.exit_code()
+    finally:
+        if lock is not None:
+            lock.close()
+
+
 def main(argv: list[str] | None = None) -> int:
-    """"run" / "diagnose [--no-split]"。任意で "--base PATH"。"""
+    """"review [--no-browser]" / "run" / "diagnose [--no-split]" / "clear [--yes]"。任意で "--base PATH"。"""
     args = sys.argv[1:] if argv is None else argv
     parser = _build_parser()
     try:
@@ -102,13 +146,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"起動に失敗しました: {exc}")
         return 2
 
-    if ns.command == "run":
-        from app.batch import run_batch
-        from app.summary import format_summary
-
-        summary = run_batch(settings, dicts)
-        print(format_summary(summary))
-        return summary.exit_code()
+    if ns.command in ("run", "review"):
+        return _run_locked(ns, settings, dicts)
 
     if ns.command == "diagnose":
         from app.diagnose import run_diagnose

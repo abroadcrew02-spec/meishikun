@@ -25,6 +25,7 @@ class FileOutcome:
     split_pdf: Path | None = None
     split_failed: bool = False
     output_failed: bool = False        # 一覧表を書けなかった（入力は input\ に残す。I7）
+    input_changed: bool = False        # 確認中に入力 PDF が変わった・無くなった（出力も移動もしない）
     rows: int = 0
     review_rows: int = 0
 
@@ -44,7 +45,7 @@ class BatchSummary:
         if self.fatal:
             return 2
         for o in self.outcomes:
-            if o.move_failed or o.split_failed or o.output_failed:
+            if o.move_failed or o.split_failed or o.output_failed or o.input_changed:
                 return 1
             if o.result.status != "ok":
                 return 1
@@ -85,9 +86,10 @@ def format_summary(s: BatchSummary) -> str:
         header += f"（対象外のファイル {len(s.ignored_files)} 件: {'、'.join(s.ignored_files)}）"
     lines.append(header)
 
-    ok = sum(1 for o in s.outcomes if o.result.status == "ok")
-    partial = sum(1 for o in s.outcomes if o.result.status == "partial")
-    bad = sum(1 for o in s.outcomes if o.result.status in ("no_text", "error"))
+    done = [o for o in s.outcomes if not o.input_changed]
+    ok = sum(1 for o in done if o.result.status == "ok")
+    partial = sum(1 for o in done if o.result.status == "partial")
+    bad = sum(1 for o in done if o.result.status in ("no_text", "error")) + (len(s.outcomes) - len(done))
     lines.append(f"  成功: {ok} 件 / 一部除外: {partial} 件 / 処理不可: {bad} 件")
 
     if s.rows > 0:
@@ -120,6 +122,12 @@ def format_summary(s: BatchSummary) -> str:
         lines.append("")
         lines.append("[入力 PDF の行き先] 処理が終わった PDF は input フォルダから移動しました")
         for o in s.outcomes:
+            if o.input_changed:
+                lines.append(
+                    f"  未出力: {o.result.file_name} → 確認中に PDF が変わったため出力していません"
+                    "（input フォルダを確かめて、もう一度実行してください）"
+                )
+                continue
             line = f"  {_status_detail(o)}"
             if o.moved_to is not None:
                 line += f" → {_folder(o.moved_to)}"

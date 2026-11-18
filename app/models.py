@@ -52,6 +52,7 @@ class SplitMethod(StrEnum):
     XYCUT = "xycut"        # 余白で切った
     SINGLE = "single"      # 切れなかったが 1 枚の名刺として妥当
     FALLBACK = "fallback"  # 切れず、名刺としても妥当でない（SPLIT_FALLBACK を付ける）
+    MANUAL = "manual"      # 利用者が確認画面で決めた枠
 
 
 class PageKind(StrEnum):
@@ -141,6 +142,22 @@ class Region:
     glyphs: list[Glyph]
     method: SplitMethod
     flags: list[Reason] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class ManualSplit:
+    """利用者が決めた枠で切った結果（segmenter.split_by_rects）。"""
+    regions: list[Region]        # 読み順
+    source: list[int]            # regions[i] が、渡した枠の何番目か
+    outside: list[Glyph]         # どの枠にも入らなかった非空白の文字
+
+
+@dataclass(slots=True)
+class PreparedPage:
+    """1 ページの下読み結果。確認画面で枠を直してから振り分けるために保持する。"""
+    page_no: int                 # 1 始まり
+    data: PageData
+    regions: list[Region]        # 自動で決めた領域（読み順）。TEXT 以外のページは空
 
 
 # ---- テキスト ----
@@ -265,6 +282,16 @@ class PdfResult:
     blank_pages: list[int] = field(default_factory=list)     # BLANK。1 始まり
     error_kind: ErrorKind | None = None
     error_type: str | None = None    # 例外クラス名のみ。メッセージは保持しない
+
+
+@dataclass(slots=True)
+class PreparedPdf:
+    """1 ファイルの下読み結果。error があれば下読みに失敗している（pages は空）。"""
+    path: Path
+    file_name: str
+    page_count: int = 0
+    pages: list[PreparedPage] = field(default_factory=list)
+    error: PdfResult | None = None
 
 
 # ---- 設定（config.py が組み立てる。値の既定は §18.1） ----

@@ -230,6 +230,28 @@ def detect_card_boxes(page: fitz.Page, cfg: "SplitCfg") -> tuple["Rect4", ...]:
     return detect_cards(page, cfg)[0]
 
 
+_PREVIEW_MAX_SIDE_PX = 2600   # 大判のページでも画像が大きくなり過ぎないようにする
+
+
+def render_page_image(path: Path, page_index: int, dpi: int) -> bytes:
+    """ページを表示空間で描画した JPEG を返す（確認画面用）。ファイルには書かない。
+
+    長辺が _PREVIEW_MAX_SIDE_PX を超えるページは、収まるように解像度を下げる。
+    開けない時は PdfOpenError、ページが無い時は IndexError を投げる。
+    """
+    doc = open_pdf(path)
+    try:
+        page = doc[page_index]
+        zoom = dpi / 72.0
+        longest = max(page.rect.width, page.rect.height) * zoom
+        if longest > _PREVIEW_MAX_SIDE_PX:
+            zoom *= _PREVIEW_MAX_SIDE_PX / longest
+        pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csRGB, alpha=False)
+        return pix.tobytes("jpeg", jpg_quality=85)
+    finally:
+        doc.close()
+
+
 def to_pdf_rect(rect: "Rect4", m: "Matrix6") -> "Rect4":
     r = fitz.Rect(rect) * fitz.Matrix(*m)
     return (r.x0, r.y0, r.x1, r.y1)

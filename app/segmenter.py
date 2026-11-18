@@ -18,6 +18,7 @@ from app.models import (
     Dictionaries,
     EdgeMap,
     Glyph,
+    ManualSplit,
     PageData,
     Reason,
     Rect4,
@@ -736,6 +737,62 @@ def _fit_missing_cards(
     return fitted
 
 
+def _assign_to_boxes(
+    glyphs: Sequence[Glyph], boxes: Sequence[Rect4], margin: float,
+) -> tuple[list[list[Glyph]], list[Glyph]]:
+    """グリフを枠に振り分ける。戻り値は (枠ごとのグリフ, どの枠にも入らなかったグリフ)。
+
+    中心点が入る枠（複数なら面積の小さい方）に入れる。どの枠にも入らないグリフは、枠を
+    margin だけ広げた範囲で同じ判定をする。縁ぎりぎりの飾り文字（`50th` の `h`）が
+    はみ出して、隣の枠の無い名刺に混ざるのを防ぐ（2026-10-06 実データ）。
+    """
+    grown = [(b[0] - margin, b[1] - margin, b[2] + margin, b[3] + margin) for b in boxes]
+    inside: list[list[Glyph]] = [[] for _ in boxes]
+    rest: list[Glyph] = []
+    for g in glyphs:
+        k = _image_index_for_point(*_center(g), boxes)
+        if k is None:
+            k = _image_index_for_point(*_center(g), grown)
+        if k is None:
+            rest.append(g)
+        else:
+            inside[k].append(g)
+    return inside, rest
+
+
+def split_by_rects(
+    page: PageData, rects: Sequence[Rect4], s: Settings, d: Dictionaries,
+) -> ManualSplit:
+    """利用者が確認画面で決めた枠で切る（method=MANUAL）。
+
+    文字の振り分けは画像から見つけた枠（§7.8）と同じ規則。枠の外に残った文字はどの名刺にも
+    入れず、outside で返す（画面が位置を示す。自動の時のように XY-cut や最寄りの枠へは回さない）。
+    """
+    boxes = list(rects)
+    margin = s.split.detect_margin_mm * 72.0 / 25.4
+    inside, rest = _assign_to_boxes(page.glyphs, boxes, margin)
+    regions: list[Region] = []
+    for box, members in zip(boxes, inside):
+        chars = [g for g in members if not _is_space(g)]
+        flags: list[Reason] = []
+        if not chars:
+            flags.append(Reason.REGION_NO_TEXT)
+        else:
+            sig = cardscore.score(chars, s, d)
+            if cardscore.looks_multi(sig, s.split):
+                flags.append(Reason.SPLIT_SUSPECT_MERGED)
+            if not cardscore.is_card_like(sig, s.split):
+                flags.append(Reason.SPLIT_WEAK)
+        regions.append(Region(page.stats.index, box, members, SplitMethod.MANUAL, flags))
+    rows = geometry.group_rows([r.rect for r in regions], s.split.row_overlap_min) if regions else []
+    order = [i for row in rows for i in row]
+    return ManualSplit(
+        regions=[regions[i] for i in order],
+        source=order,
+        outside=[g for g in rest if not _is_space(g)],
+    )
+
+
 def _detected_mode(
     page_index: int, boxes: list[Rect4], all_glyphs: list[Glyph], page_rect: Rect4,
     s: Settings, d: Dictionaries, edges: EdgeMap | None = None,
@@ -760,20 +817,7 @@ def _detected_mode(
     n_detected = len(boxes)
     boxes = boxes + fitted
 
-    inside: list[list[Glyph]] = [[] for _ in boxes]
-    rest: list[Glyph] = []
-    # 枠のすぐ外（detect_margin_mm 以内）の文字もその名刺に含める。縁ぎりぎりの飾り文字
-    # （`50th` の `h`）がはみ出して、隣の枠の無い名刺に混ざるのを防ぐ（2026-10-06 実データ）。
-    m = s.split.detect_margin_mm * 72.0 / 25.4
-    grown = [(b[0] - m, b[1] - m, b[2] + m, b[3] + m) for b in boxes]
-    for g in all_glyphs:
-        k = _image_index_for_point(*_center(g), boxes)
-        if k is None:
-            k = _image_index_for_point(*_center(g), grown)
-        if k is None:
-            rest.append(g)
-        else:
-            inside[k].append(g)
+    inside, rest = _assign_to_boxes(all_glyphs, boxes, m)
 
     regions: list[Region] = []
     box_index: list[int] = []
