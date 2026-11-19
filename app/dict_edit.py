@@ -197,7 +197,7 @@ class DictSession:
         self._trial: dict[str, Any] | None = None       # 画面に返す、試し読みの進み具合と結果
         self._trial_stop = threading.Event()
         self._trial_thread: threading.Thread | None = None
-        self._trial_folder = ""                         # この実行で最後に書いた比較表のフォルダ
+        self._trial_folders: list[str] = []             # この実行で書いた比較表のフォルダのうち、まだ消していないもの
         self._load()
 
     # ---------------------------------------------------------------- 読み込み
@@ -314,8 +314,19 @@ class DictSession:
             # stale: 試し読みの後に辞書を変えた（結果は、今の変更の内容と合っていない）
             trial = {**self._trial, "stale": self._trial.get("rev") != self.rev}
         return {"state": self.state, "rev": self.rev, "pending": self.pending(), "kinds": kinds,
-                "busy": self.busy, "trial": trial,
+                "busy": self.busy, "trial": trial, "sheets": self._sheets_left(),
                 "limits": {"word": MAX_WORD_CHARS, "note": MAX_NOTE_CHARS, "words": MAX_WORDS_PER_KIND}}
+
+    def _sheets_left(self) -> list[str]:
+        """この実行で書いた比較表のフォルダのうち、まだ output に残っているものの名前。
+
+        試し読みの結果の欄が出ていない時（保存の後など）も、画面が「名刺の内容が入った比較表が残っている」と
+        案内できるようにする。返すのはフォルダの名前だけ（実行 ID から作った名前で、名刺の内容は入らない）。
+        """
+        if self._settings is None:
+            return []
+        output = self._settings.paths.output
+        return [name for name in self._trial_folders if (output / name).is_dir()]
 
     # ---------------------------------------------------------------- 語の検査
 
@@ -729,10 +740,12 @@ class DictSession:
             return
         left_behind = False
         if not result.cancelled:
-            # 新しい比較表を書けたら（または違いが無かったら）、前の比較表は消す（名刺の内容の写しを増やさない）
-            if self._trial_folder and self._trial_folder != result.folder:
-                left_behind = not dict_trial.remove_folder(self._settings, self._trial_folder)
-            self._trial_folder = result.folder
+            # 新しい比較表を書けたら（または違いが無かったら）、前の比較表は消す（名刺の内容の写しを増やさない）。
+            # 消せなかったフォルダは覚えておく（画面の案内に出し、次の試し読みの時にもう一度消す）
+            kept = [name for name in self._trial_folders
+                    if name != result.folder and not dict_trial.remove_folder(self._settings, name)]
+            left_behind = bool(kept)
+            self._trial_folders = kept + ([result.folder] if result.folder else [])
             self._log(f"DICT_TRIAL pdfs={result.pdfs} cards={result.cards} changed_cards={result.changed_cards} "
                       f"changed_pages={result.changed_pages} unreadable={result.unreadable}")
         self._trial = {"running": False, "done": result.pdfs + result.unreadable, "total": result.pdfs + result.unreadable,

@@ -49,7 +49,16 @@
     internal: 'ツールの中で問題が起きました。続けられない時は、黒い画面（dict.bat）を閉じて、もう一度 dict.bat を実行してください。',
   };
   const OTHER_4XX_TEXT = 'この操作は受け付けられませんでした。画面を読み込み直してください';
+  // 「試し読み」を押した時の最初の確かめで止まった時の文（保存はしていないので、「保存する」を押す案内にしない）
+  const TRIAL_ERROR_TEXT = {
+    save_failed: '試し読みを始められませんでした。辞書ファイルをほかのソフト（Excel など）で開いていたら閉じて、もう一度「試し読み」を押してください。保存していない変更は、辞書ファイルに書いていません',
+    restart_needed: '試し読みを始められませんでした。前回の保存が、途中で止まったままになっています（保存していない変更は、辞書ファイルに書いていません）。辞書ファイルをほかのソフト（Excel など）で開いていたら閉じて、もう一度「試し読み」を押してください。それでも同じ文が出る時は、「終わる」を押してこの画面を終わり、dict.bat をもう一度実行してください（開き直すと、辞書は正しい状態に戻ります）',
+    duplicate_added: '足した言葉の中に、同じ言葉が 2 つあります（印の付いた言葉）。片方を取り消してから、もう一度「試し読み」を押してください',
+  };
   const TRIAL_FAILED_TEXT = '試し読みを続けられませんでした。もう一度試してください。';
+  const TRIAL_NO_CARDS_TEXT = '名刺が 1 枚も見つかりませんでした。結果は確かめられていません。';
+  const SHEET_LEFT_HEAD = '試し読みの比較表が、output フォルダの';
+  const SHEET_LEFT_TAIL = 'に残っています。比較表には名刺の内容が入っています。確かめたら、clear.bat で消してください。';
   const TRIAL_CANCELLED_TEXT = '試し読みを中止しました。';
   const TRIAL_STALE_TEXT = 'この後に辞書を変えています。もう一度試し読みをしてください。';
   const TRIAL_CANCELLING_TEXT = '中止しています。読んでいる PDF が終わるまで、お待ちください。';
@@ -72,6 +81,7 @@
     filter: '', loaded: false, working: false, ended: false,
     busy: false, trial: null, cancelling: false, overlay: '',   // overlay: 画面の覆いの種類（'' なし・'save' 保存などの出力中・'trial' 試し読み中）
     trialKey: '', focusResult: false,
+    sheets: [],               // output に残っている比較表のフォルダの名前
   };
   const timers = new Map();
   let searchTimer = 0;
@@ -350,6 +360,7 @@
     const wasBusy = st.busy;
     st.busy = s.busy === true;
     st.trial = s.trial || null;
+    st.sheets = Array.isArray(s.sheets) ? s.sheets.filter((name) => typeof name === 'string') : [];
     st.loaded = true;
     render();
     renderTrial(wasBusy);
@@ -434,6 +445,8 @@
     }
     if (r.pdfs === 0) {
       body.append(el('p', '', '読める PDF がありませんでした。結果は確かめられていません。'));
+    } else if (r.cards === 0 && r.changed_cards === 0 && r.changed_pages === 0) {
+      body.append(el('p', '', TRIAL_NO_CARDS_TEXT));      // 比べる名刺が無かった（「変わりません」とは言えない）
     } else if (r.changed_cards === 0 && r.changed_pages === 0) {
       body.append(el('p', '', '読み取りの結果は変わりません。'));
     } else {
@@ -477,6 +490,28 @@
 
   // 状態の trial を画面に出す。wasBusy: 取り直す前は読み比べの途中だった（終わった時だけ、結果へフォーカスを移す）
   function renderTrial(wasBusy, keepResult) {
+    try {
+      renderTrialBody(wasBusy, keepResult);
+    } finally {
+      renderSheetNote();
+    }
+  }
+
+  // 比較表のフォルダが output に残っている時の案内。結果の欄が同じフォルダを案内している間は出さない
+  function renderSheetNote() {
+    const note = $('sheet-left');
+    const r = st.trial && st.trial.result;
+    const shown = !$('trial-result').hidden && r && r.folder ? r.folder : '';
+    const names = st.busy ? [] : st.sheets.filter((name) => name !== shown);
+    if (!names.length) {
+      note.hidden = true;
+      return;
+    }
+    setText(note, SHEET_LEFT_HEAD + names.map((name) => '「' + name + '」').join('') + SHEET_LEFT_TAIL);
+    note.hidden = false;
+  }
+
+  function renderTrialBody(wasBusy, keepResult) {
     const t = st.trial;
     if (st.busy) {
       // 読み比べの途中: 覆いを出す（保存などの出力中の覆いがある間は、そちらを優先する）
@@ -520,7 +555,7 @@
       try {
         res = await api('trial', { rev: st.rev });
       } catch (err) {
-        await handleError(err);
+        await handleError(err, TRIAL_ERROR_TEXT);
         return;
       }
       if (!res.ok) {
@@ -638,7 +673,8 @@
   }
 
   // 通信や保存の失敗を、利用者が次にすることの分かる文にして帯に出す。戻り値: フォーカスを移したか
-  async function handleError(err) {
+  // texts: この操作だけの文（符号 → 文）。無い符号は、共通の文を使う
+  async function handleError(err, texts) {
     const code = err.code || '';
     const status = err.status || 0;
     if (code === 'closed') {
@@ -657,11 +693,11 @@
     } else if (code === 'duplicate_added') {
       try { await refreshState(); } catch (cause) { /* 取り直せなくても、帯は出す */ }
       if (!st.ended) {
-        showNotice(ERROR_TEXT.duplicate_added);
+        showNotice((texts && texts.duplicate_added) || ERROR_TEXT.duplicate_added);
         return focusDuplicateAdded();
       }
     } else if (ERROR_TEXT[code]) {
-      showNotice(ERROR_TEXT[code]);
+      showNotice((texts && texts[code]) || ERROR_TEXT[code]);
     } else if (status === 413) {
       showNotice(ERROR_TEXT.too_large);
     } else if (status >= 400 && status < 500) {
