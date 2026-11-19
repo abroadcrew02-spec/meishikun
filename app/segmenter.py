@@ -733,9 +733,12 @@ def _fit_missing_cards(
     for _round in range(3):
         if len(remaining) < s.split.card_min_chars:
             break
-        root = geometry.union([g.bbox for g in remaining])
         added = 0
-        for _rect, chars in _xy_cut(remaining, root, 0, 1.0, s, d):
+        pieces: list[tuple[Rect4, list[Glyph]]] = []
+        # 離れた所の数文字が名刺のかたまりに結合されると、型より大きくなって当てはめられない
+        for group in _far_apart_groups(remaining, template[0]):
+            pieces += _xy_cut(group, geometry.union([g.bbox for g in group]), 0, 1.0, s, d)
+        for _rect, chars in pieces:
             chars = [g for g in chars if not _is_space(g)]
             if len(chars) < s.split.card_min_chars:
                 continue
@@ -887,8 +890,9 @@ def _detected_mode(
 
     枠の中のグリフ（中心点。複数の枠に入るなら面積の小さい方）はその名刺にする。
     枠の外に残った文字（枠が見つからなかった名刺）には、名刺の型を当てはめる（§7.9）。
-    それでも残った文字は、残りだけで従来の XY-cut を行う。残りが名刺 1 枚分に
-    満たない時は、最寄りの枠に足して SPLIT_ORPHAN_TEXT。
+    それでも残った文字は、名刺の長辺より離れたまとまりごとに分けて、まとまりごとに従来の
+    XY-cut を行う（領域の矩形は、その領域の文字の範囲にする）。名刺 1 枚分に満たない
+    まとまりは、最寄りの枠に足して SPLIT_ORPHAN_TEXT。
     """
     m = s.split.detect_margin_mm * 72.0 / 25.4
     grown_boxes = [(b[0] - m, b[1] - m, b[2] + m, b[3] + m) for b in boxes]
@@ -923,18 +927,57 @@ def _detected_mode(
         regions.append(Region(page_index, box, members, method, flags))
         box_index.append(k)
 
-    rest_chars = [g for g in rest if not _is_space(g)]
-    if len(rest_chars) >= s.split.card_min_chars:
-        root = geometry.union([g.bbox for g in rest_chars])
-        regions += _xycut_mode(page_index, root, rest_chars, rest, page_rect, s, d)
-    elif rest_chars and regions:
-        rects = [r.rect for r in regions]
-        for g in rest:
-            j = _nearest_image_index(*_center(g), rects)
-            regions[j].glyphs.append(g)
-            if not _is_space(g) and Reason.SPLIT_ORPHAN_TEXT not in regions[j].flags:
-                regions[j].flags.append(Reason.SPLIT_ORPHAN_TEXT)
+    # 枠に入らなかった文字。離れた場所の文字を 1 つの領域にしない（間にある別の名刺の枠を
+    # またぐ領域になる。2026-11-19 実データ）
+    framed_rects = [r.rect for r in regions]
+    card_long = _card_template(boxes, s.split)[0]
+    for group in _far_apart_groups(rest, card_long):
+        group_chars = [g for g in group if not _is_space(g)]
+        if len(group_chars) >= s.split.card_min_chars:
+            root = geometry.union([g.bbox for g in group_chars])
+            regions += [
+                _shrink_to_text(r, m, page_rect)
+                for r in _xycut_mode(page_index, root, group_chars, group, page_rect, s, d)
+            ]
+        elif group_chars and framed_rects:
+            for g in group:
+                j = _nearest_image_index(*_center(g), framed_rects)
+                regions[j].glyphs.append(g)
+                if not _is_space(g) and Reason.SPLIT_ORPHAN_TEXT not in regions[j].flags:
+                    regions[j].flags.append(Reason.SPLIT_ORPHAN_TEXT)
     return regions
+
+
+def _far_apart_groups(glyphs: list[Glyph], far: float) -> list[list[Glyph]]:
+    """far（名刺の長辺）以上の隙間で、x → y の順に分けたまとまり。これだけ離れた文字は同じ名刺に無い。"""
+    if len(glyphs) < 2:
+        return [glyphs] if glyphs else []
+    for axis in ("x", "y"):
+        gaps = _significant_gaps(glyphs, axis, far)
+        if gaps:
+            bounds = geometry.union([g.bbox for g in glyphs])
+            parts, _widths = _split_by_gaps(glyphs, bounds, gaps, axis)
+            out: list[list[Glyph]] = []
+            for _rect, members in parts:
+                out += _far_apart_groups(members, far)
+            return out
+    return [glyphs]
+
+
+def _shrink_to_text(region: Region, margin: float, page_rect: Rect4) -> Region:
+    """領域の矩形を、その領域の文字の範囲（＋margin。ページの外へは出さない）にする。
+
+    XY-cut の矩形は、切った範囲の帯やページ全体なので、枠で切ったページでは隣の名刺の枠に重なる。
+    """
+    chars = [g for g in region.glyphs if not _is_space(g)]
+    if not chars:
+        return region
+    x0, y0, x1, y1 = geometry.union([g.bbox for g in chars])
+    rect = (
+        max(page_rect[0], x0 - margin), max(page_rect[1], y0 - margin),
+        min(page_rect[2], x1 + margin), min(page_rect[3], y1 + margin),
+    )
+    return Region(region.page_index, rect, region.glyphs, region.method, region.flags)
 
 
 def segment_page(page: PageData, s: Settings, d: Dictionaries) -> list[Region]:

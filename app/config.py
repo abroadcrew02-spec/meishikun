@@ -73,6 +73,19 @@ def _get_tuple(
     return items if items else default
 
 
+def _get_int_tuple(
+    cp: configparser.ConfigParser, section: str, key: str, default: tuple[int, ...]
+) -> tuple[int, ...]:
+    """カンマ区切りの整数の並び。キーが無ければ default、値が空なら空の並び。"""
+    if not cp.has_option(section, key):
+        return default
+    raw = cp.get(section, key)
+    try:
+        return tuple(int(x) for x in raw.split(",") if x.strip())
+    except ValueError as exc:
+        raise ConfigError(f"{section}.{key}") from exc
+
+
 def _unquote(s: str) -> str:
     if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
         return s[1:-1]
@@ -133,6 +146,8 @@ def load_settings(base: Path, ini_path: Path | None = None) -> Settings:
         detect_cards=_get_bool(cp, "split", "detect_cards", True),
         detect_dpi=_get_int(cp, "split", "detect_dpi", 150),
         detect_threshold=_get_int(cp, "split", "detect_threshold", 250),
+        # 足し引きした結果が 1〜255 に入らない値は、探す時に飛ばす（detect_threshold を上げ下げしても起動できるように）
+        detect_threshold_steps=_get_int_tuple(cp, "split", "detect_threshold_steps", (-5, -10, -20, 2)),
         detect_line_mm=_get_float(cp, "split", "detect_line_mm", 20.0),
         detect_gap_mm=_get_float(cp, "split", "detect_gap_mm", 4.0),
         card_short_mm_min=_get_float(cp, "split", "card_short_mm_min", 40.0),

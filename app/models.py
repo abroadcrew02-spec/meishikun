@@ -342,6 +342,8 @@ class SplitCfg:
     detect_cards: bool = True          # §7.8: ページ画像から名刺の枠を探す
     detect_dpi: int = 150
     detect_threshold: int = 250        # これより暗い画素を線の候補にする（255 = 白）
+    # 上のしきい値で取り切れない時に、この分だけ足し引きしたしきい値でも順に探す（空なら 1 つだけ）
+    detect_threshold_steps: tuple[int, ...] = (-5, -10, -20, 2)
     detect_line_mm: float = 20.0       # この長さ以上の直線だけを縁とみなす
     detect_gap_mm: float = 4.0         # 縁の線の、この長さ未満の途切れをつなぐ（名刺どうしの間隔より短くする）
     card_short_mm_min: float = 40.0    # 名刺の大きさ（短辺・長辺）

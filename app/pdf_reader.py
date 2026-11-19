@@ -181,7 +181,11 @@ def _read(page: fitz.Page, cfg: "TextLayerCfg", split_cfg: "SplitCfg | None" = N
     card_edges = None
     is_text = chars >= cfg.min_chars
     if split_cfg is not None and is_text:
-        card_boxes, card_edges = detect_cards(page, split_cfg)
+        points = [
+            ((g.bbox[0] + g.bbox[2]) / 2.0, (g.bbox[1] + g.bbox[3]) / 2.0)
+            for g in glyphs if not g.ch.isspace()
+        ]
+        card_boxes, card_edges = detect_cards(page, split_cfg, points)
     images = _read_images(page)
     rect = page.rect
 
@@ -227,10 +231,13 @@ def read_page_with_cards(page: fitz.Page, cfg: "TextLayerCfg", split_cfg: "Split
     return _read(page, cfg, split_cfg)
 
 
-def detect_cards(page: fitz.Page, cfg: "SplitCfg"):
+def detect_cards(page: fitz.Page, cfg: "SplitCfg", points=None):
     """ページを描画して、名刺の枠（§7.8）と当てはめ用の線の切れ端（§7.9）を返す。
 
     表示空間で描画するので回転ページもそのまま。detect_cards が false なら ((), None)。
+    points はページの文字の中心（表示空間）。渡すと、枠の外の文字が名刺 1 枚ぶん（card_min_chars）より
+    少なくなった所で探すのをやめ、後のしきい値の枠には文字の条件を付ける（carddetect.detect_card_boxes）。
+    描画は 1 回だけ（しきい値ごとに描き直さない）。
     """
     from app import carddetect
 
@@ -240,9 +247,7 @@ def detect_cards(page: fitz.Page, cfg: "SplitCfg"):
     pix = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom), colorspace=fitz.csGRAY, alpha=False)
     rot = page.get_pixmap(matrix=fitz.Matrix(zoom, zoom).prerotate(90), colorspace=fitz.csGRAY, alpha=False)
     args = (pix.samples, pix.width, pix.height, rot.samples, rot.width, rot.height, cfg.detect_dpi, cfg)
-    boxes = carddetect.detect_card_boxes(*args)
-    edges = carddetect.detect_edges(*args) if cfg.fit_cards else None
-    return boxes, edges
+    return carddetect.detect(*args, points=points)
 
 
 def detect_card_boxes(page: fitz.Page, cfg: "SplitCfg") -> tuple["Rect4", ...]:
