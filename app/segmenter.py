@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import bisect
 import statistics
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -775,7 +776,7 @@ def _assign_to_boxes(
 _FRAME_OUT_EPS = 0.01     # 枠からのはみ出しとみなす最小の長さ pt（座標の丸めの誤差を数えない）
 
 
-def _frame_is_off(box: Rect4, chars: Sequence[Glyph], ratio: float) -> bool:
+def _frame_is_off(box: Rect4, chars: Sequence[Glyph], ratio: float, left_out: int = 0) -> bool:
     """枠が名刺からずれている疑いがあるか: 枠の文字のうち、枠からはみ出した文字の割合が ratio 以上。
 
     画像から見つけた枠・型を当てはめた枠・利用者が決めた枠は、枠のすぐ外の文字もその名刺として読む
@@ -787,9 +788,10 @@ def _frame_is_off(box: Rect4, chars: Sequence[Glyph], ratio: float) -> bool:
     100 文字の名刺で 4 文字まで）。文字の少ない枠（20 文字以下）では 1 文字で付く。
     はみ出した文字が 1 つも無い枠には、ratio が 0 以下でも付けない。chars は空白以外の文字。
 
-    数えるのは、枠に振り分けた文字だけ。利用者が決めた枠を大きくずらして、文字が枠から 3 mm
-    （`detect_margin_mm`）より外へ出た時は、その文字はどの枠にも入らない文字として別に知らせる
-    （確認画面の青い点線）。その枠には、この旗は付かないことがある。
+    left_out は、同じ名刺の文字なのに、どの枠にも入らなかった文字の数（利用者が決めた枠の時だけ。
+    `_left_out_counts`）。はみ出した文字と同じに数える。利用者が枠を大きくずらすと、文字は枠から
+    3 mm（`detect_margin_mm`）より外へ出て、どの枠の文字でもなくなる。これを数えないと、ずらすほど
+    「問題なし」に戻ってしまう。文字が 1 つも無い枠には付けない（`REGION_NO_TEXT` で知らせる）。
     """
     if not chars:
         return False
@@ -798,22 +800,63 @@ def _frame_is_off(box: Rect4, chars: Sequence[Glyph], ratio: float) -> bool:
         1 for g in chars
         if max(x0 - g.bbox[0], y0 - g.bbox[1], g.bbox[2] - x1, g.bbox[3] - y1) > _FRAME_OUT_EPS
     )
-    return out > 0 and out / len(chars) >= ratio
+    out += left_out
+    return out > 0 and out / (len(chars) + left_out) >= ratio
+
+
+def _left_out_counts(
+    inside: Sequence[Sequence[Glyph]], rest: Sequence[Glyph], auto: Sequence[Region], margin: float,
+) -> list[int]:
+    """利用者が決めた枠ごとに、「同じ名刺の文字なのに、どの枠にも入らなかった文字」の数を返す。
+
+    同じ名刺かどうかは、自動で決めた領域（auto）で決める。枠の文字がいちばん多く属する自動の領域を、
+    その枠の名刺とみなし、その領域の文字のうち rest（どの枠にも入らなかった文字）に残ったものを数える。
+    - 隣の名刺の枠を利用者が消した時、隣の名刺の文字は別の領域なので数えない
+    - 自動の時に後から足したはぐれた文字（領域の矩形から margin より外の文字）は、名刺の文字に数えない
+      （利用者が触る前と後で、結果が変わらないようにする）
+    - 2 つの枠が同じ領域に属する時（1 枚を 2 つに分けた時）は、残った文字を両方の枠に数える
+    """
+    counts = [0] * len(inside)
+    if not auto or not rest:
+        return counts
+    home: dict[int, int] = {}                  # 文字（seq）→ 自動の領域の番号
+    for index, region in enumerate(auto):
+        x0, y0, x1, y1 = region.rect
+        for g in region.glyphs:
+            if _is_space(g):
+                continue
+            cx, cy = _center(g)
+            if x0 - margin <= cx <= x1 + margin and y0 - margin <= cy <= y1 + margin:
+                home[g.seq] = index
+    left = Counter(home[g.seq] for g in rest if not _is_space(g) and g.seq in home)
+    if not left:
+        return counts
+    for k, members in enumerate(inside):
+        votes = Counter(home[g.seq] for g in members if not _is_space(g) and g.seq in home)
+        if votes:
+            card = min(votes, key=lambda index: (-votes[index], index))
+            counts[k] = left.get(card, 0)
+    return counts
 
 
 def split_by_rects(
     page: PageData, rects: Sequence[Rect4], s: Settings, d: Dictionaries,
+    auto: Sequence[Region] = (),
 ) -> ManualSplit:
     """利用者が確認画面で決めた枠で切る（method=MANUAL）。
 
     文字の振り分けは画像から見つけた枠（§7.8）と同じ規則。枠の外に残った文字はどの名刺にも
     入れず、outside で返す（画面が位置を示す。自動の時のように XY-cut や最寄りの枠へは回さない）。
+
+    auto は、このページを自動で区切った時の領域。枠がずれている疑い（SPLIT_FRAME_OFF）を決める時に、
+    「同じ名刺の文字なのに、どの枠にも入らなかった文字」を数えるのに使う。振り分けには使わない。
     """
     boxes = list(rects)
     margin = s.split.detect_margin_mm * 72.0 / 25.4
     inside, rest = _assign_to_boxes(page.glyphs, boxes, margin)
+    left_out = _left_out_counts(inside, rest, auto, margin)
     regions: list[Region] = []
-    for box, members in zip(boxes, inside):
+    for k, (box, members) in enumerate(zip(boxes, inside)):
         chars = [g for g in members if not _is_space(g)]
         flags: list[Reason] = []
         if not chars:
@@ -824,7 +867,7 @@ def split_by_rects(
                 flags.append(Reason.SPLIT_SUSPECT_MERGED)
             if not cardscore.is_card_like(sig, s.split):
                 flags.append(Reason.SPLIT_WEAK)
-            if _frame_is_off(box, chars, s.split.frame_out_ratio):
+            if _frame_is_off(box, chars, s.split.frame_out_ratio, left_out[k]):
                 flags.append(Reason.SPLIT_FRAME_OFF)
         regions.append(Region(page.stats.index, box, members, SplitMethod.MANUAL, flags))
     rows = geometry.group_rows([r.rect for r in regions], s.split.row_overlap_min) if regions else []

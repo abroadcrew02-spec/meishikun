@@ -332,6 +332,7 @@ class ReviewSession:
         else:
             page.split = segmenter.split_by_rects(
                 page.prepared.data, [rect for _fid, rect in frames], self._s, self._d,
+                auto=page.prepared.regions,
             )
             page.frames = frames
         page.rev = rev
