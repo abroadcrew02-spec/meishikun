@@ -559,6 +559,10 @@ def _image_mode(
                     leaf_glyphs[k].append(g)
                 for k, leaf_rect in enumerate(leaf_rects):
                     leaf_flags = [Reason.SPLIT_ORPHAN_TEXT] if leaf_orphan[k] else []
+                    # 葉の外側の辺は画像の縁なので、縁をまたぐ文字は葉の枠からもはみ出す（下の IMAGE の枠と同じ）
+                    leaf_in_image = [g for g in resplit[k][1] if id(g) not in orphan_ids]
+                    if _frame_is_off(leaf_rect, leaf_in_image, cfg.frame_out_ratio):
+                        leaf_flags.append(Reason.SPLIT_FRAME_OFF)
                     regions.append(
                         Region(
                             page_index, leaf_rect, _in_page_order(leaf_glyphs[k]),
@@ -574,6 +578,14 @@ def _image_mode(
 
         if i in reassigned:
             flags = [*flags, Reason.SPLIT_ORPHAN_TEXT]
+        # 画像の縁をまたぐ文字が多い時は、画像と文字の位置が合っていない。後から足したはぐれた文字は
+        # 数えない（そちらは SPLIT_ORPHAN_TEXT で知らせている）。利用者がこのページの枠を 1 つでも
+        # 動かすと全部の枠を split_by_rects で切り直すので、動かす前と後で「確認してほしい枠かどうか」が
+        # 変わらないようにする。はぐれた文字のある枠は、動かした後は理由の語が変わることがある
+        # （SPLIT_ORPHAN_TEXT → SPLIT_FRAME_OFF。どちらも確認してほしい枠）
+        in_image_chars = [g for g in region_chars if id(g) not in orphan_ids]
+        if _frame_is_off(rect, in_image_chars, cfg.frame_out_ratio):
+            flags = [*flags, Reason.SPLIT_FRAME_OFF]
         regions.append(Region(page_index, rect, members, SplitMethod.IMAGE, flags))
 
     regions.extend(extra_regions)
@@ -760,6 +772,35 @@ def _assign_to_boxes(
     return inside, rest
 
 
+_FRAME_OUT_EPS = 0.01     # 枠からのはみ出しとみなす最小の長さ pt（座標の丸めの誤差を数えない）
+
+
+def _frame_is_off(box: Rect4, chars: Sequence[Glyph], ratio: float) -> bool:
+    """枠が名刺からずれている疑いがあるか: 枠の文字のうち、枠からはみ出した文字の割合が ratio 以上。
+
+    画像から見つけた枠・型を当てはめた枠・利用者が決めた枠は、枠のすぐ外の文字もその名刺として読む
+    （`_assign_to_boxes`）。読み取りは欠けないが、枠が名刺からずれていても分からない。名刺の文字は
+    ふつう名刺の内側にあるので、枠の辺にかかる文字・枠の外にある文字が多い時は、枠のほうがずれている。
+    名刺の画像を枠にする時（`_image_mode`）も、画像の縁をまたぐ文字で同じように見る。
+
+    割合で見るので、文字の多い名刺では、縁ぎりぎりの飾り文字の数文字では付かない（既定の 5% なら、
+    100 文字の名刺で 4 文字まで）。文字の少ない枠（20 文字以下）では 1 文字で付く。
+    はみ出した文字が 1 つも無い枠には、ratio が 0 以下でも付けない。chars は空白以外の文字。
+
+    数えるのは、枠に振り分けた文字だけ。利用者が決めた枠を大きくずらして、文字が枠から 3 mm
+    （`detect_margin_mm`）より外へ出た時は、その文字はどの枠にも入らない文字として別に知らせる
+    （確認画面の青い点線）。その枠には、この旗は付かないことがある。
+    """
+    if not chars:
+        return False
+    x0, y0, x1, y1 = box
+    out = sum(
+        1 for g in chars
+        if max(x0 - g.bbox[0], y0 - g.bbox[1], g.bbox[2] - x1, g.bbox[3] - y1) > _FRAME_OUT_EPS
+    )
+    return out > 0 and out / len(chars) >= ratio
+
+
 def split_by_rects(
     page: PageData, rects: Sequence[Rect4], s: Settings, d: Dictionaries,
 ) -> ManualSplit:
@@ -783,6 +824,8 @@ def split_by_rects(
                 flags.append(Reason.SPLIT_SUSPECT_MERGED)
             if not cardscore.is_card_like(sig, s.split):
                 flags.append(Reason.SPLIT_WEAK)
+            if _frame_is_off(box, chars, s.split.frame_out_ratio):
+                flags.append(Reason.SPLIT_FRAME_OFF)
         regions.append(Region(page.stats.index, box, members, SplitMethod.MANUAL, flags))
     rows = geometry.group_rows([r.rect for r in regions], s.split.row_overlap_min) if regions else []
     order = [i for row in rows for i in row]
@@ -831,6 +874,8 @@ def _detected_mode(
             flags.append(Reason.SPLIT_SUSPECT_MERGED)
         if not cardscore.is_card_like(sig, s.split):
             flags.append(Reason.SPLIT_WEAK)
+        if _frame_is_off(box, chars, s.split.frame_out_ratio):
+            flags.append(Reason.SPLIT_FRAME_OFF)
         method = SplitMethod.DETECTED if k < n_detected else SplitMethod.FITTED
         regions.append(Region(page_index, box, members, method, flags))
         box_index.append(k)

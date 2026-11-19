@@ -13,6 +13,7 @@
     SPLIT_SUSPECT_MERGED: '2 枚がくっついている疑い',
     SPLIT_WEAK: '名刺らしくない（文字や連絡先が少ない）',
     SPLIT_ORPHAN_TEXT: '枠の外の文字をこの枠に含めた',
+    SPLIT_FRAME_OFF: '文字が枠からはみ出している（枠がずれている疑い）',
     SPLIT_FALLBACK: 'ページを名刺ごとに区切れなかった',
     REGION_NO_TEXT: '枠の中に文字がない',
   };

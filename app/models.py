@@ -25,6 +25,7 @@ class Reason(StrEnum):
     SPLIT_WEAK = "SPLIT_WEAK"
     SPLIT_SUSPECT_MERGED = "SPLIT_SUSPECT_MERGED"
     SPLIT_ORPHAN_TEXT = "SPLIT_ORPHAN_TEXT"
+    SPLIT_FRAME_OFF = "SPLIT_FRAME_OFF"
     REGION_NO_TEXT = "REGION_NO_TEXT"
     VERTICAL_TEXT = "VERTICAL_TEXT"
     UNREADABLE_CHARS = "UNREADABLE_CHARS"
@@ -347,6 +348,7 @@ class SplitCfg:
     card_long_mm_min: float = 75.0
     card_long_mm_max: float = 105.0
     detect_margin_mm: float = 3.0      # 枠のすぐ外の文字もその名刺に含める幅
+    frame_out_ratio: float = 0.05      # 枠の文字のうち、枠からはみ出した文字の割合がこれ以上なら SPLIT_FRAME_OFF
     fit_cards: bool = True             # §7.9: 縁が取れなかった名刺に名刺の型を当てはめる
     fit_edge_min_mm: float = 4.0       # 当てはめに使う線の切れ端の最短の長さ
     fit_min_score: float = 0.35        # 4 辺が線の切れ端と重なる割合の平均がこれ以上なら採用

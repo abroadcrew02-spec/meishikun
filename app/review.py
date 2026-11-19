@@ -55,7 +55,7 @@ _MAX_REV = 2 ** 53         # rev の上限（画面の JavaScript が正確に�
 # 区切りに関する旗だけを画面に返す（振り分けの旗は一覧表で見る）
 _SPLIT_FLAGS = frozenset({
     Reason.SPLIT_FALLBACK, Reason.SPLIT_WEAK, Reason.SPLIT_SUSPECT_MERGED,
-    Reason.SPLIT_ORPHAN_TEXT, Reason.REGION_NO_TEXT,
+    Reason.SPLIT_ORPHAN_TEXT, Reason.SPLIT_FRAME_OFF, Reason.REGION_NO_TEXT,
 })
 
 REVIEWING = "reviewing"

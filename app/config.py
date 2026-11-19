@@ -140,6 +140,7 @@ def load_settings(base: Path, ini_path: Path | None = None) -> Settings:
         card_long_mm_min=_get_float(cp, "split", "card_long_mm_min", 75.0),
         card_long_mm_max=_get_float(cp, "split", "card_long_mm_max", 105.0),
         detect_margin_mm=_get_float(cp, "split", "detect_margin_mm", 3.0),
+        frame_out_ratio=_get_float(cp, "split", "frame_out_ratio", 0.05),
         fit_cards=_get_bool(cp, "split", "fit_cards", True),
         fit_edge_min_mm=_get_float(cp, "split", "fit_edge_min_mm", 4.0),
         fit_min_score=_get_float(cp, "split", "fit_min_score", 0.35),
