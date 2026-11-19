@@ -1,0 +1,12 @@
+dict/area_codes.csv と dict/area_code_rules.csv は、次の総務省の公表資料をもとに、このツール（meishikun）の
+作成者が加工して作成した表です。
+
+・「市外局番の一覧」（総務省）（令和 8 年 3 月 1 日現在）
+  https://www.soumu.go.jp/main_sosiki/joho_tsusin/top/tel_number/shigai_list.html
+・「電気通信番号指定状況」の固定電話番号（総務省）（令和 8 年 11 月 1 日時点としてページに掲載されていたもの）
+  https://www.soumu.go.jp/main_sosiki/joho_tsusin/top/tel_number/number_shitei.html
+
+どちらも 2026-11-19 に利用しました。加工の内容は、各ファイルの先頭に書いてあります。
+この 2 つの表は、総務省が作成・公表したものではありません。最新の内容は、上の URL で確かめてください。
+この 2 つの表の利用条件は、出典元と同じ「公共データ利用規約（第1.0版）」です
+（リポジトリのほかのファイルの利用条件とは別です）。

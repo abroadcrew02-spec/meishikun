@@ -22,6 +22,9 @@ FORM_WORDS = "words"            # 1 行 1 語
 FORM_OLD_KANJI = "old_kanji"    # old,new の CSV
 FORM_AREA_CODES = "area_codes"  # area_code,note の CSV
 
+# 市外局番の区切りの例外（prefix,area_code の CSV）。辞書の画面では編集しない。無くても動く
+AREA_RULES_FILE = "area_code_rules.csv"
+
 
 @dataclass(frozen=True)
 class DictKind:
@@ -149,10 +152,44 @@ def _parse_area_codes(path: Path, text: str | None) -> frozenset[str]:
     for line_no, content in lines[1:]:
         parts = content.split(",", 1)
         code = parts[0].strip()
-        if not code.isdigit() or not code.startswith("0") or not (2 <= len(code) <= 5):
+        if not _is_area_code(code):
             raise _error(path, line_no, "area_code は 0 始まり 2〜5 桁の数字である必要があります")
         codes.add(code)
     return frozenset(codes)
+
+
+def _is_ascii_digits(text: str) -> bool:
+    """半角の数字だけか（str.isdigit は、全角の数字や上付きの数字も通す）。"""
+    return bool(text) and text.isascii() and text.isdigit()
+
+
+def _is_area_code(code: str) -> bool:
+    return _is_ascii_digits(code) and code.startswith("0") and 2 <= len(code) <= 5
+
+
+def _parse_area_rules(path: Path, text: str | None) -> dict[str, str]:
+    """「prefix で始まる番号の市外局番は area_code」の表。ファイルが無い・行が無い時は空。"""
+    lines = _data_lines(text)
+    if not lines:
+        return {}
+    header_no, header = lines[0]
+    if [c.strip().lower() for c in header.split(",")][:2] != ["prefix", "area_code"]:
+        raise _error(path, header_no, "ヘッダは prefix,area_code である必要があります")
+
+    rules: dict[str, str] = {}
+    for line_no, content in lines[1:]:
+        parts = [c.strip() for c in content.split(",")]
+        if len(parts) < 2:
+            raise _error(path, line_no, "prefix,area_code の 2 列が必要です")
+        prefix, area = parts[0], parts[1]
+        if not _is_area_code(area):
+            raise _error(path, line_no, "area_code は 0 始まり 2〜5 桁の数字である必要があります")
+        if not (_is_ascii_digits(prefix) and len(area) < len(prefix) <= 6 and prefix.startswith(area)):
+            raise _error(path, line_no, "prefix は、area_code で始まる、それより長い 6 桁までの数字である必要があります")
+        if rules.get(prefix, area) != area:
+            raise _error(path, line_no, "同じ prefix に、違う area_code が書かれています")
+        rules[prefix] = area
+    return rules
 
 
 def load_dictionaries(dict_dir: Path, replace: Mapping[str, str] | None = None) -> Dictionaries:
@@ -182,4 +219,6 @@ def load_dictionaries(dict_dir: Path, replace: Mapping[str, str] | None = None) 
             values[kind.key] = _parse_words(path, text, old_kanji, kind)
         elif kind.form == FORM_AREA_CODES:
             values[kind.key] = _parse_area_codes(*text_of(kind))
+    rules_path = dict_dir / AREA_RULES_FILE
+    values["area_rules"] = _parse_area_rules(rules_path, _read_text(rules_path, optional=True))
     return Dictionaries(**values)

@@ -13,7 +13,11 @@ from app.models import Dictionaries, Reason
 
 _MOBILE_PREFIXES = ("070", "080", "090", "050")
 _FOUR_THREE_THREE_PREFIXES = ("0120", "0570")
+# 0 で始まる 10 桁でも、市外局番ではない番号（伝言・テレドーム・情報料の代理徴収）。
+# 市外局番の一覧に 017・018・099 があるので、区切らずに「要確認」にする
+_NOT_AREA_CODE_PREFIXES = ("0170", "0180", "0990")
 _AREA_CODE_LENGTHS = (5, 4, 3, 2)
+_AREA_RULE_LENGTHS = (6, 5, 4, 3)
 
 _GROUP_SPLIT_RE = re.compile(r"[-()\s]+")
 
@@ -23,10 +27,25 @@ _URL_HOST_END_RE = re.compile(r"[/?#]")
 _WHITESPACE_RUN_RE = re.compile(r"\s+")
 
 
-def _find_area_code(digits: str, area_codes: frozenset[str]) -> str | None:
+def _find_area_code(digits: str, d: Dictionaries) -> str | None:
+    """固定電話の番号（数字だけ）の市外局番。分からなければ None。
+
+    先に区切りの例外の表（「この数字で始まる番号の市外局番は…」。長い方が優先）を見て、無ければ
+    市外局番の一覧を長い順に当てはめる。一覧だけだと、短い局番と頭の数字が同じ番号を誤る
+    （04-71xx-xxxx を 047-1xx-xxxx に、022-3xx-xxxx を 0223-xx-xxxx に区切ってしまう）。
+
+    例外の表が指す局番が一覧に無い時（利用者が辞書の画面でその局番を消した時）は、分からないとする
+    （消した局番が、表のせいで効き続けないようにする。一覧のほかの局番に当て直すと、誤った区切りになる）。
+    """
+    if digits.startswith(_NOT_AREA_CODE_PREFIXES):
+        return None
+    for length in _AREA_RULE_LENGTHS:
+        area = d.area_rules.get(digits[:length])
+        if area is not None:
+            return area if area in d.area_codes else None
     for length in _AREA_CODE_LENGTHS:
         prefix = digits[:length]
-        if prefix in area_codes:
+        if prefix in d.area_codes:
             return prefix
     return None
 
@@ -69,7 +88,7 @@ def format_phone(digits: str, printed: str, d: Dictionaries) -> tuple[str, list[
         as_printed = _printed_fixed_line(printed, digits)
         if as_printed is not None:
             return as_printed, []
-        area = _find_area_code(digits, d.area_codes)
+        area = _find_area_code(digits, d)
         if area is not None:
             local = digits[len(area):6]
             subscriber = digits[6:10]
