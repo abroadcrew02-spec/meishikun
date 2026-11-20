@@ -807,6 +807,34 @@ def _frame_is_off(box: Rect4, chars: Sequence[Glyph], ratio: float, left_out: in
     return out > 0 and out / (len(chars) + left_out) >= ratio
 
 
+def _auto_homes(auto: Sequence[Region], margin: float) -> dict[int, int]:
+    """文字（seq）→ その文字が属する自動の領域（auto の番号）。空白は除く。
+
+    自動の時に後から足したはぐれた文字（領域の矩形から margin より外の文字）は、どの領域の文字にもしない。
+    """
+    home: dict[int, int] = {}
+    for index, region in enumerate(auto):
+        x0, y0, x1, y1 = region.rect
+        for g in region.glyphs:
+            if _is_space(g):
+                continue
+            cx, cy = _center(g)
+            if x0 - margin <= cx <= x1 + margin and y0 - margin <= cy <= y1 + margin:
+                home[g.seq] = index
+    return home
+
+
+def _flagged_merged_home(chars: Sequence[Glyph], auto: Sequence[Region], home: dict[int, int]) -> bool:
+    """枠の文字（空白以外）の過半が自動の 1 つの領域に属し、その領域に SPLIT_SUSPECT_MERGED が付いていたか。"""
+    if not chars:
+        return False
+    votes = Counter(home[g.seq] for g in chars if g.seq in home)
+    if not votes:
+        return False
+    index, count = max(votes.items(), key=lambda item: (item[1], -item[0]))
+    return count * 2 > len(chars) and Reason.SPLIT_SUSPECT_MERGED in auto[index].flags
+
+
 def _left_out_counts(
     inside: Sequence[Sequence[Glyph]], rest: Sequence[Glyph], auto: Sequence[Region], margin: float,
 ) -> list[int]:
@@ -822,15 +850,7 @@ def _left_out_counts(
     counts = [0] * len(inside)
     if not auto or not rest:
         return counts
-    home: dict[int, int] = {}                  # 文字（seq）→ 自動の領域の番号
-    for index, region in enumerate(auto):
-        x0, y0, x1, y1 = region.rect
-        for g in region.glyphs:
-            if _is_space(g):
-                continue
-            cx, cy = _center(g)
-            if x0 - margin <= cx <= x1 + margin and y0 - margin <= cy <= y1 + margin:
-                home[g.seq] = index
+    home = _auto_homes(auto, margin)
     left = Counter(home[g.seq] for g in rest if not _is_space(g) and g.seq in home)
     if not left:
         return counts
@@ -842,6 +862,24 @@ def _left_out_counts(
     return counts
 
 
+_SIZE_EPS_MM = 0.01       # 上限ちょうどの枠を、pt と mm の換算・座標の丸めで超えた扱いにしない
+
+
+def _fits_one_card(rect: Rect4, cfg: SplitCfg) -> bool:
+    """枠が名刺 1 枚の大きさに収まるか: 短辺が card_short_mm_max 以下、かつ長辺が card_long_mm_max 以下。
+
+    縦向き・横向きのどちらでも同じ。下限は見ない（小さな枠にも 2 枚は入らない）。
+    この大きさの枠には 2 枚の名刺が入らないので、SPLIT_SUSPECT_MERGED を付けない。
+    縁から見つけた枠（`carddetect` が名刺の大きさの枠だけを採る）と、型を当てはめた枠（型は
+    取れた枠の中央値か標準の大きさ）は、いつもこの大きさに収まる（`_detected_mode`）。
+    """
+    w_mm = (rect[2] - rect[0]) * 25.4 / 72.0
+    h_mm = (rect[3] - rect[1]) * 25.4 / 72.0
+    short, long_ = sorted((w_mm, h_mm))
+    return (short <= cfg.card_short_mm_max + _SIZE_EPS_MM
+            and long_ <= cfg.card_long_mm_max + _SIZE_EPS_MM)
+
+
 def split_by_rects(
     page: PageData, rects: Sequence[Rect4], s: Settings, d: Dictionaries,
     auto: Sequence[Region] = (),
@@ -851,13 +889,24 @@ def split_by_rects(
     文字の振り分けは画像から見つけた枠（§7.8）と同じ規則。枠の外に残った文字はどの名刺にも
     入れず、outside で返す（画面が位置を示す。自動の時のように XY-cut や最寄りの枠へは回さない）。
 
-    auto は、このページを自動で区切った時の領域。枠がずれている疑い（SPLIT_FRAME_OFF）を決める時に、
-    「同じ名刺の文字なのに、どの枠にも入らなかった文字」を数えるのに使う。振り分けには使わない。
+    SPLIT_SUSPECT_MERGED は次の順で決める。
+    1. 枠の文字の過半が自動の 1 つの領域（auto）に属し、その領域に印が付いていた時は、文字の合図
+       （`cardscore.looks_multi`）で付ける（枠の外の文字の XY-cut・画像モード・枠の無いページの領域の
+       印を、触った後も引き継ぐ）
+    2. それ以外で、名刺 1 枚の大きさに収まる枠（`_fits_one_card`）には付けない（縁から見つけた枠・
+       型を当てはめた枠を動かした時と、利用者が新しく描いた名刺 1 枚の大きさの枠）
+    3. それより大きい枠（利用者は大きな枠も描ける）は、文字の合図で付ける
+    枠を 1 つでも動かすとページの全部の枠をここで切り直すので、動かしていない枠の印を、自動の時と
+    同じにする。
+
+    auto は、このページを自動で区切った時の領域。上の 1 と、枠がずれている疑い（SPLIT_FRAME_OFF）を
+    決める時に「同じ名刺の文字なのに、どの枠にも入らなかった文字」を数えるのに使う。振り分けには使わない。
     """
     boxes = list(rects)
     margin = s.split.detect_margin_mm * 72.0 / 25.4
     inside, rest = _assign_to_boxes(page.glyphs, boxes, margin)
     left_out = _left_out_counts(inside, rest, auto, margin)
+    home = _auto_homes(auto, margin) if auto else {}
     regions: list[Region] = []
     for k, (box, members) in enumerate(zip(boxes, inside)):
         chars = [g for g in members if not _is_space(g)]
@@ -866,7 +915,9 @@ def split_by_rects(
             flags.append(Reason.REGION_NO_TEXT)
         else:
             sig = cardscore.score(chars, s, d)
-            if cardscore.looks_multi(sig, s.split):
+            if (
+                _flagged_merged_home(chars, auto, home) or not _fits_one_card(box, s.split)
+            ) and cardscore.looks_multi(sig, s.split):
                 flags.append(Reason.SPLIT_SUSPECT_MERGED)
             if not cardscore.is_card_like(sig, s.split):
                 flags.append(Reason.SPLIT_WEAK)
@@ -888,7 +939,10 @@ def _detected_mode(
 ) -> list[Region]:
     """§7.8: 画像から見つけた名刺の枠で切る。
 
-    枠の中のグリフ（中心点。複数の枠に入るなら面積の小さい方）はその名刺にする。
+    枠の中のグリフ（中心点。複数の枠に入るなら面積の小さい方）はその名刺にする。枠の領域には
+    SPLIT_SUSPECT_MERGED を付けない（枠は名刺 1 枚の大きさ＝`_fits_one_card`。枠の外の文字の
+    XY-cut では付く。利用者が決めた枠（`split_by_rects`）は、自動の領域の印を引き継いだ上で、同じ
+    大きさの判定をする）。
     枠の外に残った文字（枠が見つからなかった名刺）には、名刺の型を当てはめる（§7.9）。
     それでも残った文字は、名刺の長辺より離れたまとまりごとに分けて、まとまりごとに従来の
     XY-cut を行う（領域の矩形は、その領域の文字の範囲にする）。名刺 1 枚分に満たない
@@ -917,8 +971,8 @@ def _detected_mode(
             continue
         sig = cardscore.score(chars, s, d)
         flags: list[Reason] = []
-        if cardscore.looks_multi(sig, s.split):
-            flags.append(Reason.SPLIT_SUSPECT_MERGED)
+        # SPLIT_SUSPECT_MERGED は付けない。縁から見つけた枠も型を当てはめた枠も名刺 1 枚の大きさで、
+        # 2 枚が入ることは無い。会社名や郵便番号が 2 つあるのは、グループ会社の併記などの 1 枚の名刺。
         if not cardscore.is_card_like(sig, s.split):
             flags.append(Reason.SPLIT_WEAK)
         if _frame_is_off(box, chars, s.split.frame_out_ratio):
