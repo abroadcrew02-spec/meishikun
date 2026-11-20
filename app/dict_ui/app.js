@@ -443,6 +443,13 @@
     if (r.unreadable >= 1) {
       body.append(el('p', '', '読めなかった PDF が ' + r.unreadable + ' 本ありました（飛ばしました）。'));
     }
+    // 使わなかった PDF があることは、結果の読み方に関わる（「全部の PDF で確かめた」と読まれないよう、本数を出す）
+    if (r.skipped_over_limit >= 1) {
+      body.append(el('p', '', '試し読みに使うのは、新しい順に ' + r.limit_pdfs + ' 本までです。それより古い PDF ' + r.skipped_over_limit + ' 本は使っていません。'));
+    }
+    if (r.skipped_too_large >= 1) {
+      body.append(el('p', '', r.limit_mb + ' MB を超える PDF ' + r.skipped_too_large + ' 本は、大きすぎるため使っていません。'));
+    }
     if (r.pdfs === 0) {
       body.append(el('p', '', '読める PDF がありませんでした。結果は確かめられていません。'));
     } else if (r.cards === 0 && r.changed_cards === 0 && r.changed_pages === 0) {
@@ -507,8 +514,12 @@
       note.hidden = true;
       return;
     }
-    setText(note, SHEET_LEFT_HEAD + names.map((name) => '「' + name + '」').join('') + SHEET_LEFT_TAIL);
+    setText(note, sheetLeftText(names));
     note.hidden = false;
+  }
+
+  function sheetLeftText(names) {
+    return SHEET_LEFT_HEAD + names.map((name) => '「' + name + '」').join('') + SHEET_LEFT_TAIL;
   }
 
   function renderTrialBody(wasBusy, keepResult) {
@@ -647,13 +658,18 @@
     if (on) $('busy-text').focus({ preventScroll: true });
   }
 
-  function showEnd(title, lead) {
+  // sheets: 終わる時に output に残っていた比較表のフォルダの名前（あれば案内を出す）
+  function showEnd(title, lead, sheets) {
     st.ended = true;
     for (const dlg of document.querySelectorAll('dialog[open]')) dlg.close();
     $('app').hidden = true;
     $('skip').hidden = true;
     $('done-title').textContent = title;
     $('done-lead').textContent = lead;
+    const names = Array.isArray(sheets) ? sheets.filter((name) => typeof name === 'string') : [];
+    const note = $('done-sheets');
+    note.textContent = names.length ? sheetLeftText(names) : '';
+    note.hidden = !names.length;
     $('done').hidden = false;
     $('done').focus();
   }
@@ -878,9 +894,9 @@
   async function endEditing(discard) {
     setBusy(true, '終わっています。');
     try {
-      await api('close', discard ? { discard: true } : {});
+      const res = await api('close', discard ? { discard: true } : {});
       setBusy(false);
-      showEnd('終わりました。', 'このタブは閉じてかまいません。');
+      showEnd('終わりました。', 'このタブは閉じてかまいません。', res.sheets);
     } catch (err) {
       setBusy(false);
       if (err.code === 'unsaved') {

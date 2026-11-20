@@ -315,10 +315,10 @@ class DictSession:
             # stale: 試し読みの後に辞書を変えた（結果は、今の変更の内容と合っていない）
             trial = {**self._trial, "stale": self._trial.get("rev") != self.rev}
         return {"state": self.state, "rev": self.rev, "pending": self.pending(), "kinds": kinds,
-                "busy": self.busy, "trial": trial, "sheets": self._sheets_left(),
+                "busy": self.busy, "trial": trial, "sheets": self.sheets_left(),
                 "limits": {"word": MAX_WORD_CHARS, "note": MAX_NOTE_CHARS, "words": MAX_WORDS_PER_KIND}}
 
-    def _sheets_left(self) -> list[str]:
+    def sheets_left(self) -> list[str]:
         """この実行で書いた比較表のフォルダのうち、まだ output に残っているものの名前。
 
         試し読みの結果の欄が出ていない時（保存の後など）も、画面が「名刺の内容が入った比較表が残っている」と
@@ -701,7 +701,8 @@ class DictSession:
             patterns.warm(after)
         except (DictionaryError, UnicodeError, re.error) as exc:
             raise AppError(422, "invalid") from exc
-        pdfs = dict_trial.select_pdfs(self._settings)
+        plan = dict_trial.plan_pdfs(self._settings)
+        pdfs = plan.chosen
         if not pdfs:
             return {"ok": False, "reason": "no_pdfs", "rev": self.rev, "pending": self.pending()}
 
@@ -717,25 +718,32 @@ class DictSession:
 
         def work() -> None:
             result = None
+            left_behind: list[str] = []
             try:
                 result = dict_trial.run_trial(
                     self._settings, before, after, pdfs, self._run_id,
                     stop=self._trial_stop.is_set, progress=progress,
+                    skipped_over_limit=plan.over_limit, skipped_too_large=plan.too_large, left_behind=left_behind,
                 )
             except Exception as exc:  # noqa: BLE001 - 例外の中身（名刺の文字を含みうる）を出さない
                 self.log_error(type(exc).__name__)
             finally:
                 with self.lock:
-                    self._finish_trial(rev, result)
+                    self._finish_trial(rev, result, left_behind)
 
         self._trial_thread = threading.Thread(target=work, name="dict-trial", daemon=True)
         self._trial_thread.start()
         return {"ok": True, "reason": "", "rev": self.rev, "pending": self.pending()}
 
-    def _finish_trial(self, rev: int, result: Any) -> None:
+    def _finish_trial(self, rev: int, result: Any, left_behind: list[str] | None = None) -> None:
         from app import dict_trial
 
         self.busy = False
+        # 失敗した試し読みの書きかけのフォルダを消せなかった時も、残っている比較表として覚える
+        # （画面の案内に出し、次の試し読みの時にもう一度消す）
+        for name in left_behind or []:
+            if name not in self._trial_folders:
+                self._trial_folders.append(name)
         if result is None:
             self._trial = {"running": False, "done": 0, "total": 0, "rev": rev, "result": None, "failed": True}
             return
@@ -776,7 +784,7 @@ class DictSession:
             raise AppError(409, "unsaved")
         self.state = CLOSED
         self._log("DICT_CLOSE")
-        return {"ok": True, "state": CLOSED}
+        return {"ok": True, "state": CLOSED, "sheets": self.sheets_left()}
 
     def log_error(self, name: str) -> None:
         self._log(f"DICT_ERROR type={name}")
@@ -1035,6 +1043,13 @@ def latest_backup(dict_dir: Path, filename: str) -> str | None:
 # 全体の流れ（python -m app dict）
 # ---------------------------------------------------------------------------
 
+def sheets_left_text(names: list[str]) -> str:
+    """output に残っている比較表のフォルダの案内（黒い画面の 1 行。画面の文と同じ）。"""
+    folders = "".join(f"「{name}」" for name in names)
+    return (f"試し読みの比較表が、output フォルダの{folders}に残っています。"
+            "比較表には名刺の内容が入っています。確かめたら、clear.bat で消してください。")
+
+
 def run_dict_editor(settings: Any, open_browser: bool = True, echo: Any = None) -> int:
     """辞書の画面を開き、「終わる」が押されるまで待つ。呼び出し元がロックを持っていること。"""
     from app import fileops, runlog
@@ -1113,4 +1128,8 @@ def run_dict_editor(settings: Any, open_browser: bool = True, echo: Any = None) 
             session.busy = False     # 試し読みが止まるのを待ちきれなかった時も、ここで終わる
             session.close({"discard": True})
     echo("辞書の画面を終わりました。" + (f"保存していない変更 {left} 件は、取り消しました。" if left else ""))
+    with session.lock:
+        sheets = session.sheets_left()
+    if sheets:
+        echo(sheets_left_text(sheets))
     return 0

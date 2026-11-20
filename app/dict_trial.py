@@ -47,6 +47,8 @@ class TrialResult:
     fields: dict[str, int] = field(default_factory=dict)   # 項目 → その項目が変わる名刺の数
     folder: str = ""              # 比較表を置いたフォルダの名前（output\\ の中。変化が無ければ ""）
     cancelled: bool = False
+    skipped_over_limit: int = 0   # 上限（MAX_PDFS 本）を超えて、使わなかった PDF の数
+    skipped_too_large: int = 0    # 大きすぎて（MAX_PDF_BYTES を超えて）、使わなかった PDF の数
 
     def to_json(self) -> dict[str, object]:
         return {
@@ -54,13 +56,29 @@ class TrialResult:
             "changed_cards": self.changed_cards, "changed_pages": self.changed_pages,
             "fields": [{"name": name, "cards": n} for name, n in self.fields.items()],
             "folder": self.folder, "file": COMPARE_NAME if self.folder else "", "cancelled": self.cancelled,
+            "skipped_over_limit": self.skipped_over_limit, "skipped_too_large": self.skipped_too_large,
+            "limit_pdfs": MAX_PDFS, "limit_mb": MAX_PDF_BYTES // (1024 * 1024),
         }
 
 
+@dataclass
+class Selection:
+    """試し読みに使う PDF と、使わなかった PDF の数（名前は持たない）。"""
+    chosen: list[Path] = field(default_factory=list)
+    over_limit: int = 0           # 上限を超えて使わなかった数（大きすぎるものは too_large に数える）
+    too_large: int = 0            # MAX_PDF_BYTES を超えていて使わなかった数
+
+
 def select_pdfs(settings: "Settings") -> list[Path]:
+    """試し読みに使う PDF（plan_pdfs の chosen）。"""
+    return plan_pdfs(settings).chosen
+
+
+def plan_pdfs(settings: "Settings") -> Selection:
     """試し読みに使う PDF。done\\ と input\\ の直下から、更新の新しい順に MAX_PDFS 本まで。
 
     中身が同じ PDF（同じものを何度も読み込んだ時の写し）は 1 本にする。読めないファイルは飛ばす。
+    上限に達した後の PDF は読まず、大きさだけを見て数える（中身が同じかどうかは調べない）。
     """
     found: list[tuple[int, str, Path]] = []
     for folder in (settings.paths.done, settings.paths.input):
@@ -71,13 +89,16 @@ def select_pdfs(settings: "Settings") -> list[Path]:
             except OSError:
                 continue
     found.sort(key=lambda item: (-item[0], item[1]))
-    chosen: list[Path] = []
+    plan = Selection()
     seen: set[str] = set()
     for _mtime, _name, path in found:
-        if len(chosen) >= MAX_PDFS:
-            break
         try:
-            if path.stat().st_size > MAX_PDF_BYTES:
+            too_large = path.stat().st_size > MAX_PDF_BYTES
+            if too_large:
+                plan.too_large += 1
+                continue
+            if len(plan.chosen) >= MAX_PDFS:
+                plan.over_limit += 1          # 上限の後は、中身を読まずに数える
                 continue
             with path.open("rb") as f:
                 digest = hashlib.file_digest(f, "sha256").hexdigest()     # 少しずつ読む（丸ごと抱えない）
@@ -86,8 +107,8 @@ def select_pdfs(settings: "Settings") -> list[Path]:
         if digest in seen:
             continue
         seen.add(digest)
-        chosen.append(path)
-    return chosen
+        plan.chosen.append(path)
+    return plan
 
 
 def _by_page(result: "PdfResult") -> dict[int, list["CardRecord"]]:
@@ -125,12 +146,15 @@ def _compare_pdf(
 def run_trial(
     settings: "Settings", before: "Dictionaries", after: "Dictionaries", pdfs: list[Path], run_id: str,
     *, stop: Callable[[], bool] = lambda: False, progress: Callable[[int, int], None] = lambda done, total: None,
+    skipped_over_limit: int = 0, skipped_too_large: int = 0, left_behind: list[str] | None = None,
 ) -> TrialResult:
     """pdfs を 2 つの辞書で読み比べる。stop() が真になったら、読んでいる PDF の後で止める。
 
     比較表は、違いが 1 つでもある時だけ書く。止められた時は書かない。
+    skipped_* は、選ぶ時に使わなかった PDF の数（結果にそのまま載せる）。
+    書き出しに失敗し、書きかけのフォルダを消せなかった時は、そのフォルダの名前を left_behind に足す。
     """
-    result = TrialResult()
+    result = TrialResult(skipped_over_limit=skipped_over_limit, skipped_too_large=skipped_too_large)
     out_rows: list[list[str]] = []
     total = len(pdfs)
     for n, pdf in enumerate(pdfs):
@@ -158,6 +182,8 @@ def run_trial(
             writers.write_xlsx(folder / COMPARE_NAME, [list(HEADER), *out_rows], title=SHEET_TITLE)
         except BaseException:
             shutil.rmtree(folder, ignore_errors=True)    # 書きかけの比較表（名刺の内容が入る）を残さない
+            if left_behind is not None and folder.exists():
+                left_behind.append(folder.name)          # 消せなかった（ほかのソフトが掴んでいる）。呼び出し元が覚える
             raise
         result.folder = folder.name
     return result

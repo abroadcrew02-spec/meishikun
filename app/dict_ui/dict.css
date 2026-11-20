@@ -141,6 +141,7 @@ input[aria-invalid="true"] { border: 2px solid var(--danger); }
   background: var(--panel); color: var(--ink);
   border-bottom: 2px solid var(--out);
 }
+.done .sheet-left { margin-top: 20px; border: 2px solid var(--out); }
 .trial-care { font-weight: 700; }
 .trial-table-wrap { overflow-x: auto; max-width: 100%; }
 .trial-table { border-collapse: collapse; background: #fff; font-size: 14px; }
