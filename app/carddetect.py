@@ -183,6 +183,26 @@ def _candidates_at(
     return found, len(horiz) + len(vert)
 
 
+def _takes_a_known_character(
+    c: Rect4, kept: Sequence[Rect4], covered: Sequence[tuple[float, float]], margin: float,
+) -> bool:
+    """候補 c を足すと、既にある枠（余白を含む）の文字が c に移るか。
+
+    文字の振り分け（segmenter._assign_to_boxes）は、まず枠そのもので、どれにも入らない文字だけを余白
+    だけ広げた範囲で判定する。そのため
+    - 既にある枠の内側の文字は、c の枠そのものに入る時だけ移りうる（c の余白に入るだけなら、元の枠に残る）
+    - 既にある枠の余白だけにある文字は、c を余白だけ広げた範囲に入れば移りうる
+    """
+    if any(geometry.contains_point(c, *point) for point in covered):
+        return True
+    grown = (c[0] - margin, c[1] - margin, c[2] + margin, c[3] + margin)
+    return any(
+        geometry.contains_point(grown, *point)
+        for point in covered
+        if not any(geometry.contains_point(k, *point) for k in kept)
+    )
+
+
 def _detect(
     gray: bytes, width: int, height: int,
     gray_rot: bytes, rot_width: int, rot_height: int,
@@ -217,15 +237,10 @@ def _detect(
             if not any(_overlap_of_smaller(c, k) >= _KNOWN_CARD_OVERLAP for k in kept)
         ]
         if points is not None:
-            # 先の枠の文字は、候補を余白だけ広げた範囲に 1 つも無いこと（文字は、枠に入らなければ余白だけ
-            # 広げた範囲で振り分けるので、余白が重なる所の文字を、後の枠が取ってしまう）
             candidates = [
                 c for c in candidates
                 if sum(1 for point in uncovered if geometry.contains_point(c, *point)) >= cfg.card_min_chars
-                and not any(
-                    geometry.contains_point((c[0] - margin, c[1] - margin, c[2] + margin, c[3] + margin), *point)
-                    for point in covered
-                )
+                and not _takes_a_known_character(c, kept, covered, margin)
             ]
         added = _keep_larger_of_overlapping(candidates)
         if added:
@@ -253,7 +268,9 @@ def detect_card_boxes(
     - 枠（detect_margin_mm だけ広げる）の外の文字が card_min_chars 未満になった所でやめる
     - 後のしきい値の枠は、まだ枠に入っていない文字を card_min_chars 以上含むものだけを足す
       （文字の無い場所の、名刺の大きさの四角を拾わない）
-    - 既にある枠（広げた範囲）の文字が、余白だけ広げた範囲に入る枠は足さない（先の枠の文字を、後の枠が取らない）
+    - 既にある枠（広げた範囲）の文字を取ってしまう枠は足さない（先の枠の文字を、後の枠が取らない）。
+      既にある枠の内側の文字は、後の枠そのものに入る時、既にある枠の余白だけにある文字は、後の枠を余白だけ
+      広げた範囲に入る時に、取ってしまうとみなす（文字の振り分けと同じ順。_takes_a_known_character）
     points を渡さない時（画素だけのテスト）は、文字の条件なしで、すべてのしきい値を試す。
     """
     return tuple(_detect(gray, width, height, gray_rot, rot_width, rot_height, dpi, cfg, points)[0])
