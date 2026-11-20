@@ -376,6 +376,14 @@ class ClassifyCfg:
     name_size_ratio: float = 1.25
     name_space_dominance: float = 1.3
     name_merge_gap_ratio: float = 4.0
+    # 氏名の候補が複数でも、選んだ候補の大きさが、ほかの候補のうちいちばん大きいもののこの倍率以上なら
+    # NAME_MULTI_CANDIDATES を付けない（点数もいちばん高い時だけ。1 以上）
+    name_dominance_ratio: float = 1.5
+    # 氏名の候補が 1 つも無い名刺で、ローマ字・カタカナの氏名を拾う（試験的。既定は拾わない。
+    # 大きい英字の部署名・スローガンを、印なしで氏名にする形が残っているため）
+    name_fallback: bool = False
+    # 上の拾い方で、本文の文字の大きさの中央値のこの倍率以上の片を、根拠のある片とする
+    name_fallback_size_ratio: float = 1.5
     address_max_lines: int = 3
     address_line_gap_ratio: float = 1.0
     address_size_tolerance: float = 0.3

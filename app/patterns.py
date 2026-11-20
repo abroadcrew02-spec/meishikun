@@ -561,6 +561,156 @@ def is_name_like(norm: str, cfg: ClassifyCfg, d: Dictionaries) -> bool:
     return True
 
 
+# ---- 氏名の候補が無い時の代わりの候補: ローマ字・カタカナの氏名の形（2026-11-20） ----
+
+# 大文字 1 字＋小文字（`Taro`・`O'Neil`・`Ma'ia`）
+_LATIN_CAPITALIZED_RE = re.compile(r"[A-Z](?:[a-z]+(?:'[a-z]+)?|'[A-Z][a-z]+)")
+# 全部大文字で 2 字以上（`MIHON`・`O'NEIL`）
+_LATIN_UPPER_RE = re.compile(r"[A-Z](?:'?[A-Z])+")
+# 頭文字（`J.`）
+_LATIN_INITIAL_RE = re.compile(r"[A-Z]\.")
+# 地名・建物の語（氏名の語にしない）
+_LATIN_PLACE_WORDS = frozenset({"tokyo", "osaka", "japan", "bldg", "building", "floor", "tower"})
+_LATIN_NAME_MIN_WORDS = 2
+_LATIN_NAME_MAX_WORDS = 3
+# メールのドメイン・URL のホストと比べる語の最短の字数
+_HOST_WORD_MIN_CHARS = 4
+
+# カタカナの氏名の 1 語（ァ〜ヺ と ー）
+_KATAKANA_NAME_WORD_RE = re.compile("[ァ-ヺー]{2,8}")
+_KATAKANA_NAME_SEP_RE = re.compile(r"\s*・\s*|\s+")
+
+# 役割の宛先（@ の前がこれらの語だけなら、氏名の根拠にしない）
+_ROLE_MAILBOXES = frozenset({
+    "info", "sales", "support", "contact", "office", "admin", "mail", "webmaster", "inquiry", "hello",
+    "recruit", "pr", "hr", "service", "shop", "order", "customer", "press", "jobs", "career", "marketing",
+    "general", "soumu", "eigyo", "help", "team", "staff", "contactus", "noreply", "inquiries", "recruiting",
+})
+# @ の前を語に分ける区切り（`.` `_` `-` `+` と数字）
+_EMAIL_LOCAL_SPLIT_RE = re.compile(r"[._\-+0-9]+")
+_EMAIL_PARTIAL_MIN_CHARS = 4    # これ以上の語は部分一致で比べる
+_EMAIL_EXACT_CHARS = 3          # この字数の語は、区切った語と完全に一致した時だけ
+
+
+def _alnum_fold(text: str) -> str:
+    """英数字だけにして、大文字と小文字を区別しない形にする。"""
+    return "".join(c for c in text.casefold() if c.isascii() and c.isalnum())
+
+
+def _latin_word_kind(word: str) -> str | None:
+    """ローマ字の氏名の 1 語の種類（"initial"・"capitalized"・"upper"）。氏名の語の形でなければ None。
+
+    ハイフンでつないだ語（`Jean-Luc`）は、どの部分も大文字で始まる時だけ通す（`Minato-ku` は通さない）。
+    """
+    if _LATIN_INITIAL_RE.fullmatch(word):
+        return "initial"
+    kinds: list[str] = []
+    for seg in word.split("-"):
+        if _LATIN_CAPITALIZED_RE.fullmatch(seg):
+            kinds.append("capitalized")
+        elif _LATIN_UPPER_RE.fullmatch(seg):
+            kinds.append("upper")
+        else:
+            return None
+    return "capitalized" if "capitalized" in kinds else "upper"
+
+
+def _split_latin_name_tokens(norm: str) -> list[str] | None:
+    """空白で 2〜3 語に分け、最初の語の後ろのカンマ（`Mihon, Taro`）を外す。ほかの位置のカンマは None。"""
+    tokens = norm.split()
+    if not _LATIN_NAME_MIN_WORDS <= len(tokens) <= _LATIN_NAME_MAX_WORDS:
+        return None
+    words: list[str] = []
+    for i, token in enumerate(tokens):
+        if i == 0 and token.endswith(","):
+            token = token[:-1]
+        if "," in token:
+            return None
+        words.append(token)
+    return words
+
+
+def _is_excluded_latin_word(word: str, d: Dictionaries, host_keys: list[str]) -> bool:
+    """法人格・見出し・英語の部署や拠点の語・地名や建物の語・メールのドメインや URL のホストの語か。"""
+    if _has_company_type(word, d) or _phone(d).label_only.fullmatch(word) or _is_english_unit_word(word):
+        return True
+    key = _alnum_fold(word)
+    if key in _LATIN_PLACE_WORDS:
+        return True
+    return len(key) >= _HOST_WORD_MIN_CHARS and any(key in host for host in host_keys)
+
+
+def latin_name_words(
+    norm: str, d: Dictionaries, hosts: tuple[str, ...] | list[str] = (),
+) -> tuple[str, ...] | None:
+    """ローマ字の氏名の形の片なら、その語（最初の語の後ろのカンマは外す）。形が合わなければ None。
+
+    - 2〜3 語。各語は大文字 1 字＋小文字（`Taro`）か、全部大文字で 2 字以上（`MIHON`）か、頭文字（`J.`。1 つまで）。
+      全部大文字の語と頭文字だけの片（`ABC DEF`）は合わない。アポストロフィ（`O'Neil`）は可
+    - 役職の語・法人格・見出しの語（TEL・URL など）・英語の部署や拠点の語・地名や建物の語を含まない
+    - hosts（その名刺のメールのドメインと URL のホスト）に入っている 4 字以上の語を含まない（社名・ブランド名）
+    """
+    words = _split_latin_name_tokens(norm)
+    if words is None:
+        return None
+    kinds = [_latin_word_kind(w) for w in words]
+    if None in kinds or kinds.count("initial") > 1 or "capitalized" not in kinds:
+        return None
+    if find_title(norm, d) is not None or find_company(norm, d) is not None:
+        return None
+    host_keys = [_alnum_fold(h) for h in hosts]
+    for word, kind in zip(words, kinds):
+        if kind != "initial" and _is_excluded_latin_word(word, d, host_keys):
+            return None
+    return tuple(words)
+
+
+def is_katakana_name(norm: str, d: Dictionaries) -> bool:
+    """カタカナの氏名の形の片か（空白か `・` で区切った 2 語。各語は 2〜8 字のカタカナ。`ー` を含む）。
+
+    組織名の語尾・部署の語尾・拠点の語で終わる語と、役職の語を含む片は合わない
+    （is_name_like と同じ語の一覧で除く）。
+    """
+    words = [w for w in _KATAKANA_NAME_SEP_RE.split(norm.strip()) if w]
+    if len(words) != 2 or not all(_KATAKANA_NAME_WORD_RE.fullmatch(w) for w in words):
+        return False
+    org_suffixes = _org_suffix_words(tuple(d.org_suffixes))
+    branch_labels = _words(tuple(d.branch_labels), BRANCH_LABELS)
+    for w in words:
+        if any(w.endswith(suf) for suf in d.dept_suffixes):
+            return False
+        if w.endswith(org_suffixes) or w.endswith(branch_labels):
+            return False
+    return find_title(norm, d) is None
+
+
+def _is_role_mailbox(local: str) -> bool:
+    parts = [p.casefold() for p in _EMAIL_LOCAL_SPLIT_RE.split(local) if p]
+    return not parts or all(p in _ROLE_MAILBOXES for p in parts)
+
+
+def email_matches_name(words: tuple[str, ...] | list[str], emails: list[str]) -> bool:
+    """氏名の語のどれかが、メールアドレスの @ の前に入っているか。
+
+    4 字以上の語は部分一致。3 字の語は、@ の前を `.` `_` `-` `+` と数字で区切った語と完全に一致した時だけ。
+    どちらも英数字だけにして、大文字と小文字を区別せずに比べる。@ の前が役割の宛先（info・sales など）の
+    メールは根拠にしない。
+    """
+    keys = [_alnum_fold(w) for w in words]
+    for email in emails:
+        local, sep, _domain = email.partition("@")
+        if not sep or _is_role_mailbox(local):
+            continue
+        local_key = _alnum_fold(local)
+        tokens = {_alnum_fold(t) for t in _EMAIL_LOCAL_SPLIT_RE.split(local)}
+        for key in keys:
+            if len(key) >= _EMAIL_PARTIAL_MIN_CHARS and key in local_key:
+                return True
+            if len(key) == _EMAIL_EXACT_CHARS and key in tokens:
+                return True
+    return False
+
+
 def is_address_start(norm: str, has_postal: bool, d: Dictionaries | None = None) -> bool:
     if has_postal:
         return True

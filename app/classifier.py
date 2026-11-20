@@ -1019,24 +1019,99 @@ def _split_ascii_edges_for_names(
     return out
 
 
+def _is_dominant(scored: list[tuple[int, _Piece]], cfg: ClassifyCfg) -> bool:
+    """選んだ候補（scored[0]）が、はっきり大きい候補か（dev/name_flags/brief.md の A-1）。
+
+    scored は点数で絞って並べた後の (点数, 片)。点数がほかのどの候補よりも高く、大きさがほかのどの候補
+    以上で、ほかの候補のうちいちばん大きいものの name_dominance_ratio 倍以上の時に真。割り算をしないので、
+    大きさが 0 の候補があっても落ちない。
+    """
+    best_score, best = scored[0]
+    others = scored[1:]
+    if not others:
+        return True
+    if any(score >= best_score for score, _ in others):
+        return False
+    best_size = _piece_size(best)
+    other_max = max(_piece_size(p) for _, p in others)
+    return best_size >= other_max and best_size >= cfg.name_dominance_ratio * other_max
+
+
+def _mail_and_url_hosts(emails: list[str], urls: list[str]) -> list[str]:
+    """メールアドレスのドメイン（@ の後ろ）と URL のホスト。"""
+    hosts = [e.partition("@")[2] for e in emails]
+    for url in urls:
+        rest = url.split("://", 1)[-1]
+        hosts.append(re.split(r"[/?#:]", rest, maxsplit=1)[0])
+    return [h for h in hosts if h]
+
+
+def _fallback_name_piece(
+    merged: list[_Piece], median_size: float, cfg: ClassifyCfg, d: Dictionaries,
+    emails: list[str], urls: list[str],
+) -> tuple[_Piece | None, bool]:
+    """氏名の候補が 1 つも無い時の、ローマ字・カタカナの氏名の片（dev/name_flags/brief.md の B-1〜B-3）。
+
+    戻り値は (氏名にする片, NAME_MULTI_CANDIDATES を付けるか)。根拠（メールの @ の前に語がある・
+    文字が本文の中央値の name_fallback_size_ratio 倍以上）のある片が無ければ (None, False)。
+    形の合う片が 2 つ以上なら、メールの根拠のある片を先に、次に大きい順に選び、必ず印を付ける。
+    """
+    hosts = _mail_and_url_hosts(emails, urls)
+    shaped: list[tuple[bool, _Piece]] = []   # (メールの根拠があるか, 片)
+    for p in merged:
+        norm = _piece_norm(p)
+        words = patterns.latin_name_words(norm, d, hosts)
+        if words is not None:
+            shaped.append((patterns.email_matches_name(words, emails), p))
+        elif patterns.is_katakana_name(norm, d):
+            shaped.append((False, p))
+    evidenced = [
+        (by_mail, p) for by_mail, p in shaped
+        if by_mail or (median_size > 0 and _piece_size(p) >= cfg.name_fallback_size_ratio * median_size)
+    ]
+    if not evidenced:
+        return None, False
+    evidenced.sort(key=lambda bp: (not bp[0], -_piece_size(bp[1]), *_piece_row_col(bp[1])))
+    return evidenced[0][1], len(shaped) >= 2
+
+
+def _extract_fallback_name(
+    merged: list[_Piece], median_size: float, cfg: ClassifyCfg, d: Dictionaries,
+    emails: list[str], urls: list[str],
+) -> tuple[list[_Piece], str, Reason | None]:
+    """氏名の候補が 1 つも無い時の氏名。name_fallback が偽か、拾える片が無ければ今までどおり NAME_NOT_FOUND。
+
+    氏名の値は名刺の表記のまま（空白を整えるだけ。compress_name_spaces は通さない）。
+    """
+    if not cfg.name_fallback:
+        return merged, "", Reason.NAME_NOT_FOUND
+    best, multi = _fallback_name_piece(merged, median_size, cfg, d, emails, urls)
+    if best is None:
+        return merged, "", Reason.NAME_NOT_FOUND
+    leftover = [p for p in merged if p is not best]
+    return leftover, formatter.clean_spaces(_piece_raw(best)), Reason.NAME_MULTI_CANDIDATES if multi else None
+
+
 def _extract_name(
     pieces: list[_Piece],
     lines: list[TextLine],
     cfg: ClassifyCfg,
     d: Dictionaries,
     title_lines: list[TextLine],
+    emails: list[str],
+    urls: list[str],
 ) -> tuple[list[_Piece], str, Reason | None]:
     merged = _merge_short_name_pieces(pieces, cfg)
     merged = _split_ascii_edges_for_names(merged, cfg, d)
 
     name_candidates = [p for p in merged if patterns.is_name_like(_piece_norm(p), cfg, d)]
 
-    if not name_candidates:
-        return merged, "", Reason.NAME_NOT_FOUND
-
     horizontal_sizes = [ln.size for ln in lines if not ln.vertical]
     median_size = statistics.median(horizontal_sizes) if horizontal_sizes else 0.0
     max_size = max(horizontal_sizes) if horizontal_sizes else 0.0
+
+    if not name_candidates:
+        return _extract_fallback_name(merged, median_size, cfg, d, emails, urls)
 
     scored = [
         (_score_name_candidate(p, median_size, max_size, title_lines, cfg), p)
@@ -1049,7 +1124,8 @@ def _extract_name(
 
     filtered = [p for _, p in scored]
     best = filtered[0]
-    name_reason = Reason.NAME_MULTI_CANDIDATES if len(filtered) >= 2 else None
+    multi = len(filtered) >= 2 and not _is_dominant(scored, cfg)
+    name_reason = Reason.NAME_MULTI_CANDIDATES if multi else None
 
     name_raw = formatter.compress_name_spaces(
         _piece_raw(best), _piece_gaps(best), cfg.name_space_dominance,
@@ -1140,7 +1216,9 @@ def classify(region: Region, s: Settings, d: Dictionaries) -> CardFields:
     pieces, department = _extract_departments(pieces, d, dept_parts)
     fields.department = department
 
-    pieces, name, name_reason = _extract_name(pieces, lines, s.classify, d, title_lines)
+    pieces, name, name_reason = _extract_name(
+        pieces, lines, s.classify, d, title_lines, fields.emails, fields.urls,
+    )
     fields.name = name
     if name_reason is not None:
         reasons.add(name_reason)

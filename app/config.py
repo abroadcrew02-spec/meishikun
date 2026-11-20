@@ -42,6 +42,16 @@ def _get_float(cp: configparser.ConfigParser, section: str, key: str, default: f
         raise ConfigError(f"{section}.{key}") from exc
 
 
+def _get_ratio_at_least_one(
+    cp: configparser.ConfigParser, section: str, key: str, default: float,
+) -> float:
+    """1 以上の倍率。1 未満（と数でない nan）は設定の誤りにする。"""
+    value = _get_float(cp, section, key, default)
+    if not value >= 1.0:
+        raise ConfigError(f"{section}.{key}")
+    return value
+
+
 def _get_int(cp: configparser.ConfigParser, section: str, key: str, default: int) -> int:
     if not cp.has_option(section, key):
         return default
@@ -178,6 +188,9 @@ def load_settings(base: Path, ini_path: Path | None = None) -> Settings:
         name_size_ratio=_get_float(cp, "classify", "name_size_ratio", 1.25),
         name_space_dominance=_get_float(cp, "classify", "name_space_dominance", 1.3),
         name_merge_gap_ratio=_get_float(cp, "classify", "name_merge_gap_ratio", 4.0),
+        name_dominance_ratio=_get_ratio_at_least_one(cp, "classify", "name_dominance_ratio", 1.5),
+        name_fallback=_get_bool(cp, "classify", "name_fallback", False),
+        name_fallback_size_ratio=_get_float(cp, "classify", "name_fallback_size_ratio", 1.5),
         address_max_lines=_get_int(cp, "classify", "address_max_lines", 3),
         address_line_gap_ratio=_get_float(cp, "classify", "address_line_gap_ratio", 1.0),
         address_size_tolerance=_get_float(cp, "classify", "address_size_tolerance", 0.3),
