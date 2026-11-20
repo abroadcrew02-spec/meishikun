@@ -253,8 +253,137 @@ def _word_at(spans: list[tuple[int, int]], ms: int, me: int) -> tuple[int, tuple
     return None
 
 
+_COMPANY_NAME_MAX_WORDS = 6     # 法人格の隣の語に加えて、英字の社名の語として足す語数の上限
+# 英語の部署・拠点の語。会社名の後ろへ伸ばす時だけ、ここで止める（前の語も、部署名・拠点名の一部とみなす）。
+# 社名の末尾にもなる語（Group・Center・Lab など）は入れない
+_ENGLISH_UNIT_WORDS = frozenset({
+    "dept", "department", "departments", "div", "division", "section", "branch", "office", "unit",
+    "headquarters", "hq", "team",
+})
+
+
+def _is_english_unit_word(word: str) -> bool:
+    """英語の部署・拠点の語か。後ろの句読点（`Dept.,`）と、囲む括弧（`(Dept.)`）は外して比べる。
+
+    括弧つきの語は、英字の社名の語にならない（_is_english_text が通さない）。括弧を外すのは、次の語を先読みして
+    「部署名の前の語」を見分ける時のため。
+    """
+    core = word.casefold().strip("()[]{}<>").rstrip(",;:").rstrip(".")
+    return core in _ENGLISH_UNIT_WORDS
+
+
+def _is_ascii_text(text: str) -> bool:
+    return bool(text) and all(_is_company_ascii_char(c) for c in text)
+
+
+def _is_english_text(text: str) -> bool:
+    """英字の社名に使う文字だけでできているか（英数字・`& . , ' - +`・アクセントつきのラテン文字）。"""
+    return bool(text) and all(_is_company_ascii_char(c) or c == "+" or "À" <= c <= "ɏ" for c in text)
+
+
+def _is_type_only_katakana_word(word: str, d: Dictionaries) -> bool:
+    """会社の種類を表すだけのカタカナの語（`ジャパン`・`ホールディングス`）か。
+
+    この語の前は、英字のブランド名が続くことが多い（`Dummy ジャパン 株式会社`）。カタカナの社名
+    （`ダミー 株式会社`）の前の英字は、英語の表記や部署名なので、さかのぼらない。
+    """
+    if not all("ァ" <= c <= "ヶ" or c in "ー・" for c in word):
+        return False     # `商事`・`研究所` のような漢字の語尾の前の英字は、英語の表記や拠点名なので含めない
+    return word == "ジャパン" or word in _org_suffix_words(tuple(d.org_suffixes))
+
+
+def _has_company_type(word: str, d: Dictionaries) -> bool:
+    folded = word.casefold()
+    return any((s.casefold() in folded) if s.isascii() else (s in word) for s in d.corp_suffixes)
+
+
+def _is_english_name_word(word: str, d: Dictionaries, extending_forward: bool = False) -> bool:
+    """英字の社名の 1 語として、会社名に足してよい語か。
+
+    英数字と `& . , ' - +`・アクセントつきのラテン文字だけでできていて、英字を 1 つ以上含む語
+    （`&` だけの語は、語をつなぐ記号として通す）。
+    数字だけの語・肩書き（`President`）・見出しだけの語（`TEL`・`URL`）・法人格を含む語（別の会社名）は、
+    社名の語にしない。extending_forward（会社名の後ろへ伸ばす時）は、英語の部署・拠点の語（`Dept.`）も社名の語にしない。
+    """
+    if not _is_english_text(word) or _has_company_type(word, d):
+        return False
+    if sum(c.isdigit() for c in word) >= 6:
+        return False     # 電話番号がくっついた語（`TEL03-0000-0001`）
+    if extending_forward and _is_english_unit_word(word):
+        return False
+    if word != "&" and not any(c.isalpha() for c in word):
+        return False
+    return find_title(word, d) is None and not _phone(d).label_only.fullmatch(word)
+
+
+def _extend_start_over_english_words(
+    norm: str, spans: list[tuple[int, int]], first: int, start: int, d: Dictionaries,
+) -> int:
+    """spans[first] から前へ、英字の社名の語が続く間さかのぼった開始位置（1 語も無ければ start のまま）。
+
+    `,` で終わる語は区切りなので、そこで止める。先頭に残った `&` だけの語は外す。
+    """
+    taken: list[int] = []
+    j = first
+    for _ in range(_COMPANY_NAME_MAX_WORDS):
+        if j < 0:
+            break
+        word = norm[spans[j][0]:spans[j][1]]
+        if word.endswith(",") or not _is_english_name_word(word, d):
+            break
+        taken.append(j)
+        j -= 1
+    while taken and norm[spans[taken[-1]][0]:spans[taken[-1]][1]] == "&":
+        taken.pop()
+    return spans[taken[-1]][0] if taken else start
+
+
+def _extend_end_over_english_words(
+    norm: str, spans: list[tuple[int, int]], first: int, end: int, d: Dictionaries,
+) -> int:
+    """spans[first] から後ろへ、英字の社名の語が続く間進んだ終了位置（1 語も無ければ end のまま）。
+
+    次の語が役職の語か英語の部署・拠点の語なら、その語の手前で止める（`株式会社 Dummy Sales Manager` の `Sales`、
+    `株式会社 Dummy Sales Dept.` の `Sales` は、役職・部署名の一部）。
+    `,` で終わる語は区切りなので、そこで止める（`株式会社 Dummy Trading, Sales Manager`）。末尾に残った `&` だけの語は外す。
+    """
+    taken: list[int] = []
+    k = first
+    for _ in range(_COMPANY_NAME_MAX_WORDS):
+        if k >= len(spans):
+            break
+        word = norm[spans[k][0]:spans[k][1]]
+        if word.endswith(",") or not _is_english_name_word(word, d, extending_forward=True):
+            break
+        following = norm[spans[k + 1][0]:spans[k + 1][1]] if k + 1 < len(spans) else ""
+        if following and (find_title(following, d) is not None or _is_english_unit_word(following)):
+            break
+        taken.append(k)
+        k += 1
+    while taken and norm[spans[taken[-1]][0]:spans[taken[-1]][1]] == "&":
+        taken.pop()
+    return spans[taken[-1]][1] if taken else end
+
+
 def find_company(norm: str, d: Dictionaries) -> tuple[int, int] | None:
+    """会社名の範囲。法人格（会社の種類の語）を含む語を軸に、名前の語を足す。
+
+    - 法人格が単独の語: 前株（`株式会社 ダミー商事`）なら次の語、後株（`ダミー商事 株式会社`）なら前の語を足す。
+      法人格の前にも後ろにも語がある時は、前株とみなす（今までどおり。`… 株式会社 東京支店` は、名前が前にあっても
+      `株式会社 東京支店` になる。どちらの語が名前かを、文字の並びだけでは決められないため）
+    - 法人格が語にくっついている（`ダミー商事株式会社`）: その語の全体
+    - 英字の社名は、空白で区切った何語かでできている（`Dummy Trading Japan 株式会社`）。隣の 1 語だけを取ると
+      `Japan 株式会社` で切れるので、英字の社名の語が続く間は、その語も足す（隣の語に加えて 6 語まで）
+    - かな・漢字の語は、隣の 1 語より先へは足さない（部署名・拠点名・肩書きを巻き込まないため）。
+      和文の社名の後ろの英字（`株式会社 ダミー商事 Tokyo Office`）も足さない。後株で隣が `ジャパン` のような
+      会社の種類だけのカタカナの語の時だけ、その前の英字を足す（`Dummy ジャパン 株式会社`）
+    - 法人格を含む語（別の会社名）を越えては足さない
+    """
     spans = _word_spans(norm)
+
+    def word(index: int) -> str:
+        return norm[spans[index][0]:spans[index][1]]
+
     best: tuple[int, int] | None = None
     for suffix in d.corp_suffixes:
         is_ascii = suffix.isascii()
@@ -263,26 +392,43 @@ def find_company(norm: str, d: Dictionaries) -> tuple[int, int] | None:
             if found is None:
                 continue
             i, (ws, we) = found
+            prev_i, next_i = i - 1, i + 1
             if is_ascii:
                 # 英字の法人格: 直前に続く英字の語（§10.5）を語単位で遡って含める。
                 start = ws
-                j = i - 1
-                while j >= 0 and all(
-                    _is_company_ascii_char(c) for c in norm[spans[j][0]:spans[j][1]]
-                ):
+                j = prev_i
+                while j >= 0 and _is_ascii_text(word(j)):
                     start = spans[j][0]
                     j -= 1
                 candidate = (start, me)
             elif ms == ws and me == we:
-                # 語が法人格だけ: 前株なら次の語、無ければ後株として前の語を含める。
-                if i + 1 < len(spans):
-                    candidate = (ws, spans[i + 1][1])
-                elif i - 1 >= 0:
-                    candidate = (spans[i - 1][0], we)
+                # 語が法人格だけ
+                has_prev, has_next = prev_i >= 0, next_i < len(spans)
+                if has_next:
+                    # 前株: 次の語。その語が英字の社名の語なら、続く英字の語も（`,` で終わる語は区切りなので、その先は足さない）
+                    end = spans[next_i][1]
+                    neighbor = word(next_i)
+                    if not neighbor.endswith(",") and _is_english_name_word(neighbor, d, extending_forward=True):
+                        end = _extend_end_over_english_words(norm, spans, next_i + 1, end, d)
+                    candidate = (ws, end)
+                elif has_prev:
+                    # 後株: 前の語。その語が英字の社名の語か、会社の種類だけのカタカナの語なら、その前に続く英字の語も
+                    start = spans[prev_i][0]
+                    if _is_english_name_word(word(prev_i), d) or _is_type_only_katakana_word(word(prev_i), d):
+                        start = _extend_start_over_english_words(norm, spans, prev_i - 1, start, d)
+                    candidate = (start, we)
                 else:
                     candidate = (ws, we)
             else:
-                candidate = (ws, we)
+                # 法人格が名前の語にくっついている（`Japan株式会社`・`株式会社Dummy`）。その語の全体が会社名
+                # （`Dummy Trading株式会社東京支店` のように後ろにくっついた拠点も、今までどおり含む）。
+                # くっついた側が英字なら、その先に続く英字の社名の語も足す
+                start, end = ws, we
+                if _is_english_text(norm[ws:ms]):
+                    start = _extend_start_over_english_words(norm, spans, prev_i, ws, d)
+                if _is_english_text(norm[me:we]) and not norm[me:we].endswith(","):
+                    end = _extend_end_over_english_words(norm, spans, next_i, we, d)
+                candidate = (start, end)
             if best is None or (candidate[0], -(candidate[1] - candidate[0])) < (
                 best[0], -(best[1] - best[0]),
             ):
