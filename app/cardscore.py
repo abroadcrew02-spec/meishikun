@@ -65,7 +65,7 @@ def score(glyphs: Sequence[Glyph], s: Settings, d: Dictionaries) -> CardSignals:
     has_url = False
     has_company = False
     has_name_like = False
-    cjk_companies = 0
+    company_texts: list[str] = []   # 行ごとの会社名の範囲の文字
     emails = 0
     postals = 0
     name_pieces: list[tuple[str, float]] = []   # (空白を除いた norm, 行の size)
@@ -90,13 +90,21 @@ def score(glyphs: Sequence[Glyph], s: Settings, d: Dictionaries) -> CardSignals:
         if company_span is not None:
             has_company = True
             cs, ce = company_span
-            if _contains_cjk(norm[cs:ce]):
-                cjk_companies += 1
+            company_texts.append(norm[cs:ce])
 
         for piece in _remaining_pieces(norm, hits):
             if patterns.is_name_like(piece, s.classify, d):
                 has_name_like = True
                 name_pieces.append((piece.replace(" ", ""), line.size))
+
+    # 句点・読点を含む文だけ、会社名に数えない（名刺の下の注記で、2 枚がくっついた疑いが付くのを防ぐ）。
+    # 語尾だけを根拠にした文は、今までどおり数える。項目の振り分け（classifier）は、文でない候補がある時に
+    # 候補から外すが、ここで外すと、2 枚の名刺がくっついた領域で片方の社名が文に似ている時に、
+    # 切り直しの合図（会社名が 2 つ）が消えて、2 枚が 1 枚のままになる
+    cjk_companies = sum(
+        1 for t in company_texts
+        if patterns.sentence_kind(t) is not patterns.SentenceKind.PUNCTUATION and _contains_cjk(t)
+    )
 
     has_email = emails > 0
 

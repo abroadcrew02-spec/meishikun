@@ -6,7 +6,9 @@ from __future__ import annotations
 
 import functools
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
+from enum import Enum
 
 from app.models import (
     BRANCH_LABELS,
@@ -434,6 +436,67 @@ def find_company(norm: str, d: Dictionaries) -> tuple[int, int] | None:
             ):
                 best = candidate
     return best
+
+
+# 和文の文の語尾。日本語の文は空白で区切られないので、法人格を含む注記の文
+# （`ダミーシステムは株式会社見本の登録商標です。`）が 1 語になり、会社名の候補になってしまう。
+_SENTENCE_ENDINGS = ("です", "ます", "ません", "ました", "ください", "います", "あります")
+
+
+# ひらがな（小書きのかな・`ゔ`・`ゕ`・`ゖ`・踊り字の `ゝ`・`ゞ` を含む）。
+_HIRAGANA = "ぁ-ゖゝゞ"
+
+# 文の中には、ひらがなの直後に漢字・カタカナ・英数字が続く所がある（`は株`・`の登`・`お問`）。
+# `株式会社まるます`・`株式会社魚ます`・`株式会社ダミーです` のような社名には無い。`ー` と空白は数えない
+_HIRAGANA_THEN_OTHER_RE = re.compile(rf"[{_HIRAGANA}][^{_HIRAGANA}ー\s]")
+
+# 文の判定で両端から外す字。classifier が片の両端から落とす字（classifier._TRIM_CHARS）と同じにする。
+# 行の全体から会社名の範囲を取る cardscore と、片から取る classifier とで、両端の `、`・`・` の有無が
+# 違っても、同じ判定になるようにする（`株式会社見本あります、`）
+SENTENCE_EDGE_CHARS = " \t/・|,、:："
+_SENTENCE_EDGE_RE = re.compile(rf"^[{re.escape(SENTENCE_EDGE_CHARS)}\s]+|[{re.escape(SENTENCE_EDGE_CHARS)}\s]+$")
+
+
+class SentenceKind(Enum):
+    """会社名の範囲が文である時の、文とみなした根拠。"""
+
+    PUNCTUATION = "punctuation"   # 句点（`。`）か読点（`、`）を含む
+    ENDING = "ending"             # 句読点は無く、文の語尾とひらがなの並びだけを根拠にした
+
+
+def sentence_kind(text: str) -> SentenceKind | None:
+    """text（正規化済み。find_company が返した範囲）が文か、文ならその根拠。文でなければ None。
+
+    両端の区切り（SENTENCE_EDGE_CHARS と空白）を外してから判定する。
+    - PUNCTUATION: 句点（`。`）か読点（`、`）を含む
+    - ENDING: 文の語尾（`です`・`ます` など）で終わり、かつ、ひらがなの直後にひらがな以外の字が続く所がある
+      （`…は株式会社見本の登録商標です`）。語尾だけでは決めない（`ます`・`です` で終わる社名がある）
+    """
+    core = _SENTENCE_EDGE_RE.sub("", text)
+    if "。" in core or "、" in core:
+        return SentenceKind.PUNCTUATION
+    if core.endswith(_SENTENCE_ENDINGS) and _HIRAGANA_THEN_OTHER_RE.search(core) is not None:
+        return SentenceKind.ENDING
+    return None
+
+
+def is_sentence(text: str) -> bool:
+    """text（正規化済み）が会社名ではなく文か（sentence_kind が None でない）。"""
+    return sentence_kind(text) is not None
+
+
+def company_candidate_flags(kinds: Sequence[SentenceKind | None]) -> list[bool]:
+    """1 つの名刺（領域）の会社名の範囲ごとの文の判定から、どれを会社名の候補にするか。
+
+    - 文でない範囲は、候補にする
+    - 句点・読点を含む文は、いつでも候補にしない
+    - 語尾だけを根拠にした文は、文でない範囲が 1 つ以上ある時だけ候補にしない。無い時は、今までどおり候補にする
+      （`株式会社みらいの森です` のような、語尾とひらがなの並びが文に似た社名を空にしないため）
+
+    classifier（項目の振り分け）と cardscore（領域の合図）の両方が使う。
+    """
+    has_plain = any(k is None for k in kinds)
+    return [k is None or (k is SentenceKind.ENDING and not has_plain) for k in kinds]
 
 
 # 辞書に無い「〜長」の語（班長・グループ長・ライン長 など）を役職とみなす（§10.6）。

@@ -389,17 +389,28 @@ def _extract_company(
     remaining: list[_Piece] = []
     candidates: list[tuple[TextLine, int, int, bool]] = []  # ln, gs, ge, has_cjk
 
-    for p in pieces:
+    # 会社名の範囲を持つ片ごとに、文かどうかを判定する。どれを候補にするかは、名刺の中のほかの範囲にもよる
+    # （語尾だけを根拠にした文は、文でない範囲がある時だけ外す。patterns.company_candidate_flags）
+    found_by_piece: dict[int, tuple[int, int]] = {}
+    kinds: list[patterns.SentenceKind | None] = []
+    for i, p in enumerate(pieces):
         if len(p.parts) != 1:
-            remaining.append(p)
             continue
         ln, s, e = p.parts[0]
         norm = ln.text.norm[s:e]
         found = patterns.find_company(norm, d)
-        if found is None:
+        if found is not None:
+            found_by_piece[i] = found
+            kinds.append(patterns.sentence_kind(norm[found[0]:found[1]]))
+    keep = dict(zip(found_by_piece, patterns.company_candidate_flags(kinds)))
+
+    for i, p in enumerate(pieces):
+        if not keep.get(i, False):
+            # 会社名の範囲が無い片と、法人格を含む文（名刺の下の注記）は、片のまま次の項目へ回す
             remaining.append(p)
             continue
-        cs, ce = found
+        ln, s, e = p.parts[0]
+        cs, ce = found_by_piece[i]
         gs, ge = s + cs, s + ce
         candidates.append((ln, gs, ge, _has_cjk(ln.text.norm[gs:ge])))
         for ns, ne in ((s, gs), (ge, e)):
